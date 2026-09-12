@@ -1,6 +1,6 @@
 import random
 import calendar
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -558,6 +558,34 @@ st.markdown(
         border-color: var(--accent) !important;
     }}
 
+
+    .progress-strip {{
+        display:grid;
+        grid-template-columns: repeat(4, minmax(0,1fr));
+        gap: .75rem;
+        margin: 1rem 0 1.3rem;
+    }}
+    .progress-stat {{
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        padding: 1rem 1.05rem;
+        box-shadow: 0 8px 24px var(--shadow);
+    }}
+    .progress-stat-label {{ color: var(--muted); font-size:.76rem; font-weight:800; text-transform:uppercase; letter-spacing:.08em; }}
+    .progress-stat-value {{ color:var(--text); font-size:1.75rem; font-weight:800; margin-top:.18rem; }}
+    .progress-stat-sub {{ color:var(--muted); font-size:.79rem; margin-top:.2rem; }}
+    .week-dots {{ display:flex; gap:.45rem; margin-top:.85rem; }}
+    .week-dot {{ width:2rem; height:2rem; border-radius:10px; display:grid; place-items:center; background:var(--surface2); border:1px solid var(--border); color:var(--muted); font-size:.72rem; font-weight:800; }}
+    .week-dot.done {{ background:var(--accent); border-color:var(--accent); color:#fff; }}
+    .week-dot.today {{ outline:2px solid var(--accent); outline-offset:2px; }}
+    .mistake-card {{ background:var(--surface); border:1px solid var(--border); border-radius:18px; padding:1rem 1.1rem; margin-bottom:.8rem; box-shadow:0 8px 24px var(--shadow); }}
+    .mistake-tag {{ display:inline-block; padding:.3rem .55rem; border-radius:999px; background:rgba(217,122,104,.12); color:var(--danger); font-size:.72rem; font-weight:800; text-transform:uppercase; letter-spacing:.06em; }}
+    .review-answer {{ margin-top:.45rem; padding:.55rem .7rem; background:var(--surface2); border-radius:11px; font-size:.84rem; }}
+    @media (max-width: 900px) {{
+        .progress-strip {{ grid-template-columns: repeat(2, minmax(0,1fr)); }}
+    }}
+
     @media (max-width: 900px) {{
         .block-container {{ padding: 1.25rem 1rem 3rem; }}
         .hero {{ padding: 1.6rem; border-radius: 22px; }}
@@ -595,10 +623,154 @@ except Exception as exc:
 def reset_quiz_state():
     keys = [
         "quiz_questions", "current_index", "quiz_completed", "celebration_done",
-        "source_df", "q_mode", "num_q", "quiz_started_at", "review_panel"
+        "source_df", "q_mode", "num_q", "quiz_started_at", "review_panel",
+        "quiz_recorded", "review_mode"
     ]
     for key in keys:
         st.session_state.pop(key, None)
+
+
+def ensure_progress_state():
+    if "study_history" not in st.session_state:
+        st.session_state.study_history = []
+    if "mistake_bank" not in st.session_state:
+        st.session_state.mistake_bank = {}
+
+
+def question_key(q):
+    return f"{q['date'].isoformat()}|{q['question']}"
+
+
+def update_mistake_bank(q):
+    ensure_progress_state()
+    key = question_key(q)
+    if q["user_answer"] is not None and q["user_answer"] == q["correct"]:
+        st.session_state.mistake_bank.pop(key, None)
+        return
+    existing = st.session_state.mistake_bank.get(key, {})
+    st.session_state.mistake_bank[key] = {
+        "date": q["date"],
+        "question": q["question"],
+        "options": q["options"],
+        "correct": q["correct"],
+        "explanation": q["explanation"],
+        "last_answer": q["user_answer"],
+        "times_missed": int(existing.get("times_missed", 0)) + 1,
+    }
+
+
+def record_quiz_result(questions):
+    ensure_progress_state()
+    if st.session_state.get("quiz_recorded"):
+        return
+    correct, incorrect, skipped, attended = answer_counts(questions)
+    st.session_state.study_history.append({
+        "completed_on": date.today(),
+        "correct": correct,
+        "incorrect": incorrect,
+        "skipped": skipped,
+        "attended": attended,
+        "total": len(questions),
+        "mode": "Review" if st.session_state.get("review_mode") else st.session_state.get("q_mode", "Quiz"),
+    })
+    st.session_state.quiz_recorded = True
+
+
+def progress_stats():
+    ensure_progress_state()
+    history = st.session_state.study_history
+    quizzes = len(history)
+    correct = sum(int(x["correct"]) for x in history)
+    attended = sum(int(x["attended"]) for x in history)
+    accuracy = (correct / attended * 100) if attended else 0
+    completed_dates = sorted({x["completed_on"] for x in history})
+    current = 0
+    cursor = date.today()
+    date_set = set(completed_dates)
+    if cursor not in date_set:
+        cursor = cursor - timedelta(days=1)
+    while cursor in date_set:
+        current += 1
+        cursor -= timedelta(days=1)
+    best = 0
+    running = 0
+    prev = None
+    for d in completed_dates:
+        if prev is not None and d == prev + timedelta(days=1):
+            running += 1
+        else:
+            running = 1
+        best = max(best, running)
+        prev = d
+    return {
+        "quizzes": quizzes,
+        "correct": correct,
+        "attended": attended,
+        "accuracy": accuracy,
+        "current_streak": current,
+        "best_streak": best,
+        "dates": completed_dates,
+    }
+
+
+def render_progress_strip():
+    stats = progress_stats()
+    st.markdown(
+        f"""
+        <div class='progress-strip'>
+            <div class='progress-stat'><div class='progress-stat-label'>Current streak</div><div class='progress-stat-value'>{stats['current_streak']} day{'s' if stats['current_streak'] != 1 else ''} 🔥</div><div class='progress-stat-sub'>Keep the chain alive.</div></div>
+            <div class='progress-stat'><div class='progress-stat-label'>Best streak</div><div class='progress-stat-value'>{stats['best_streak']} day{'s' if stats['best_streak'] != 1 else ''}</div><div class='progress-stat-sub'>Your personal record.</div></div>
+            <div class='progress-stat'><div class='progress-stat-label'>Quizzes taken</div><div class='progress-stat-value'>{stats['quizzes']}</div><div class='progress-stat-sub'>Completed sessions.</div></div>
+            <div class='progress-stat'><div class='progress-stat-label'>Overall accuracy</div><div class='progress-stat-value'>{stats['accuracy']:.0f}%</div><div class='progress-stat-sub'>{stats['correct']} correct / {stats['attended']} attempted.</div></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    week_start = date.today() - timedelta(days=date.today().weekday())
+    completed = set(stats["dates"])
+    labels = ["M","T","W","T","F","S","S"]
+    dots = []
+    for i, label in enumerate(labels):
+        d = week_start + timedelta(days=i)
+        cls = "week-dot"
+        if d in completed:
+            cls += " done"
+        if d == date.today():
+            cls += " today"
+        dots.append(f"<div class='{cls}'>{label}</div>")
+    st.markdown(
+        f"<div class='card'><div class='metric-label'>This week</div><div class='week-dots'>{''.join(dots)}</div></div>",
+        unsafe_allow_html=True,
+    )
+
+
+def initialize_quiz_from_records(records):
+    questions = []
+    for item in records:
+        opts = list(item["options"])
+        random.shuffle(opts)
+        questions.append({
+            "date": item["date"],
+            "question": item["question"],
+            "options": opts,
+            "correct": item["correct"],
+            "explanation": item["explanation"],
+            "user_answer": None,
+            "locked": False,
+        })
+    st.session_state.update({
+        "source_df": pd.DataFrame(),
+        "q_mode": "Review",
+        "num_q": len(questions),
+        "quiz_questions": questions,
+        "current_index": 0,
+        "quiz_completed": False,
+        "celebration_done": False,
+        "quiz_started_at": pd.Timestamp.now().strftime("%H:%M"),
+        "review_panel": None,
+        "review_mode": True,
+        "quiz_recorded": False,
+    })
 
 
 def generate_question_sample(source_df, q_mode, num_q):
@@ -654,6 +826,8 @@ def initialize_quiz(source_df, q_mode, num_q):
         "celebration_done": False,
         "quiz_started_at": pd.Timestamp.now().strftime("%H:%M"),
         "review_panel": None,
+        "review_mode": False,
+        "quiz_recorded": False,
     })
 
 
@@ -770,6 +944,9 @@ def render_calendar_picker(label, state_key, default_value):
     return selected
 
 
+# Initialize persistent session-state containers only after helper functions exist.
+ensure_progress_state()
+
 # =========================================================
 # SIDEBAR
 # =========================================================
@@ -778,7 +955,7 @@ st.sidebar.caption("A calm little place to turn daily news into long-term memory
 
 with st.sidebar:
     st.markdown("### Workspace")
-    pages = ["🏠 Dashboard", "📅 Daily Quiz", "🎯 Custom Test"]
+    pages = ["🏠 Dashboard", "📅 Daily Quiz", "🎯 Custom Test", "🧠 Review Mistakes"]
     current_page = st.session_state.get("app_page", pages[0])
     app_page = st.radio(
         "Go to",
@@ -804,6 +981,17 @@ with st.sidebar:
     selected_theme = theme_labels[selected_label]
     if selected_theme != st.session_state.theme:
         st.session_state.theme = selected_theme
+        st.rerun()
+
+    stats = progress_stats()
+    st.markdown("### Your progress")
+    st.markdown(
+        f"<div style='display:grid;grid-template-columns:1fr 1fr;gap:.7rem'><div><div style='color:var(--muted);font-size:.75rem'>Streak</div><div style='font-size:1.9rem;font-weight:800'>{stats['current_streak']} 🔥</div></div><div><div style='color:var(--muted);font-size:.75rem'>Accuracy</div><div style='font-size:1.9rem;font-weight:800'>{stats['accuracy']:.0f}%</div></div></div>",
+        unsafe_allow_html=True,
+    )
+    if st.button(f"🧠 Review Mistakes ({len(st.session_state.mistake_bank)})", use_container_width=True):
+        reset_quiz_state()
+        st.session_state.app_page = "🧠 Review Mistakes"
         st.rerun()
 
     st.markdown("### Your library")
@@ -841,6 +1029,8 @@ if app_page == "🏠 Dashboard" and "quiz_questions" not in st.session_state:
         unsafe_allow_html=True,
     )
 
+    render_progress_strip()
+
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         render_metric("Question bank", f"{len(df):,}", "Questions ready to practise")
@@ -869,6 +1059,12 @@ if app_page == "🏠 Dashboard" and "quiz_questions" not in st.session_state:
         recent_count = len(df[df["Date"].isin(recent_dates)])
         st.markdown(f'<div class="card"><div style="font-size:2rem">✨</div><h3>7-day pulse</h3><p style="color:var(--muted)">{recent_count:,} questions across the latest {len(recent_dates)} available study days.</p></div>', unsafe_allow_html=True)
         st.caption("A small snapshot, not a performance score.")
+
+    if st.session_state.mistake_bank:
+        st.markdown(f'<div class="tip">🧠 <b>{len(st.session_state.mistake_bank)} question{"s" if len(st.session_state.mistake_bank) != 1 else ""} waiting for review.</b> Practice mistakes regularly and they will disappear automatically when you get them right.</div>', unsafe_allow_html=True)
+        if st.button("Open Review Mistakes →", use_container_width=True):
+            st.session_state.app_page = "🧠 Review Mistakes"
+            st.rerun()
 
     st.markdown('<div class="section-head"><div class="title">Your question bank at a glance</div><div class="hint">Distribution by date</div></div>', unsafe_allow_html=True)
     daily_counts = df.groupby("Date").size().reset_index(name="Questions")
@@ -981,6 +1177,50 @@ elif app_page == "🎯 Custom Test" and "quiz_questions" not in st.session_state
             st.rerun()
 
 # =========================================================
+# REVIEW MISTAKES
+# =========================================================
+elif app_page == "🧠 Review Mistakes" and "quiz_questions" not in st.session_state:
+    mistakes = list(st.session_state.mistake_bank.values())
+    st.markdown('<div class="eyebrow">Memory repair</div>', unsafe_allow_html=True)
+    st.title("Review your mistakes")
+    st.write("Questions you missed or skipped stay here until you answer them correctly.")
+    render_progress_strip()
+
+    if not mistakes:
+        st.info("Your mistakes bank is empty. Take a quiz first, and anything you miss will land here for practice.")
+        if st.button("📅 Start a Daily Quiz", type="primary", use_container_width=True):
+            st.session_state.app_page = "📅 Daily Quiz"
+            st.rerun()
+    else:
+        c1, c2, c3 = st.columns(3)
+        with c1: render_metric("Needs review", f"{len(mistakes)}", "Questions waiting in your bank")
+        with c2: render_metric("Most missed", f"{max(int(x.get('times_missed', 1)) for x in mistakes)}×", "Highest miss count")
+        with c3: render_metric("Goal", "100%", "Clear the bank by mastering them")
+
+        if st.button("🧠 Practice all mistakes", type="primary", use_container_width=True):
+            initialize_quiz_from_records(mistakes)
+            st.rerun()
+
+        st.markdown('<div class="section-head"><div class="title">Your mistake bank</div><div class="hint">Correct answers remove items from this list.</div></div>', unsafe_allow_html=True)
+        for item in sorted(mistakes, key=lambda x: (-int(x.get("times_missed", 1)), x["date"])):
+            last = "Skipped" if item.get("last_answer") is None else f"Your answer: {item['last_answer']}"
+            st.markdown(
+                f"""
+                <div class="mistake-card">
+                    <div style="display:flex;justify-content:space-between;gap:.6rem;align-items:center;flex-wrap:wrap">
+                        <span class="mistake-tag">Needs review · {item.get('times_missed',1)}×</span>
+                        <span style="color:var(--muted);font-size:.78rem">{item['date'].strftime('%d %b %Y')}</span>
+                    </div>
+                    <div style="font-weight:800;font-size:1rem;line-height:1.45;margin-top:.65rem">{item['question']}</div>
+                    <div class="review-answer"><b>Correct:</b> {item['correct']}</div>
+                    <div class="review-answer"><b>Last attempt:</b> {last}</div>
+                    <div style="color:var(--muted);font-size:.84rem;line-height:1.55;margin-top:.55rem"><b>Explanation:</b> {item['explanation']}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+# =========================================================
 # QUIZ ENGINE
 # =========================================================
 elif "quiz_questions" in st.session_state:
@@ -989,6 +1229,7 @@ elif "quiz_questions" in st.session_state:
     curr_idx = st.session_state.current_index
 
     if st.session_state.quiz_completed:
+        record_quiz_result(questions)
         if not st.session_state.get("celebration_done", False):
             st.balloons()
             st.session_state.celebration_done = True
@@ -1047,7 +1288,10 @@ elif "quiz_questions" in st.session_state:
         c1, c2, c3 = st.columns(3)
         with c1:
             if st.button("🔁 Reattempt", type="primary", use_container_width=True):
-                initialize_quiz(st.session_state.source_df, st.session_state.q_mode, st.session_state.num_q)
+                if st.session_state.get("review_mode"):
+                    initialize_quiz_from_records(questions)
+                else:
+                    initialize_quiz(st.session_state.source_df, st.session_state.q_mode, st.session_state.num_q)
                 st.rerun()
         with c2:
             if st.button("🏠 Back to Dashboard", use_container_width=True):
@@ -1166,6 +1410,7 @@ elif "quiz_questions" in st.session_state:
                     if st.button("Skip", use_container_width=True):
                         q_data["user_answer"] = None
                         q_data["locked"] = True
+                        update_mistake_bank(q_data)
                         # Stay on the same question so the skipped state and explanation
                         # are visible before the learner moves on.
                         st.rerun()
@@ -1176,6 +1421,7 @@ elif "quiz_questions" in st.session_state:
                         else:
                             q_data["user_answer"] = selected_option
                             q_data["locked"] = True
+                            update_mistake_bank(q_data)
                             # Do NOT advance yet. The learner must see the explanation
                             # for this exact question and explicitly press Next.
                             st.rerun()
