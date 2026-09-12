@@ -1,4 +1,5 @@
 import random
+import calendar
 from datetime import date
 
 import pandas as pd
@@ -33,39 +34,40 @@ THEMES = {
         "border": "#DDE6D7",
         "shadow": "rgba(52, 74, 45, 0.10)",
     },
-    "Midnight": {
-        "bg": "#0E1411",
-        "surface": "#151D18",
-        "surface_2": "#1D2821",
-        "text": "#EAF3EC",
-        "muted": "#A8B7AC",
-        "accent": "#A7C77A",
-        "accent_dark": "#7FA258",
-        "accent_soft": "#2A382C",
-        "success": "#6FBE8A",
-        "danger": "#E28A7A",
-        "warning": "#D7A75A",
-        "border": "#2C392F",
-        "shadow": "rgba(0, 0, 0, 0.28)",
+    "Lavender": {
+        "bg": "#F8F6FC",
+        "surface": "#FFFFFF",
+        "surface_2": "#F0ECF8",
+        "text": "#302B3D",
+        "muted": "#756F85",
+        "accent": "#8A78B8",
+        "accent_dark": "#665594",
+        "accent_soft": "#E7E0F3",
+        "success": "#5C9874",
+        "danger": "#CE786D",
+        "warning": "#C58A45",
+        "border": "#E1DBED",
+        "shadow": "rgba(66, 52, 92, 0.10)",
     },
-    "Warm": {
-        "bg": "#FBF8F1",
-        "surface": "#FFFDF9",
-        "surface_2": "#F5EFE3",
-        "text": "#3B3328",
-        "muted": "#86796B",
-        "accent": "#8A8F57",
-        "accent_dark": "#666B3E",
-        "accent_soft": "#EBE9D8",
-        "success": "#5E8A69",
-        "danger": "#C97567",
-        "warning": "#BC8B48",
-        "border": "#E7DDCC",
-        "shadow": "rgba(74, 58, 39, 0.10)",
+    "Sky": {
+        "bg": "#F3F9FC",
+        "surface": "#FFFFFF",
+        "surface_2": "#E8F2F7",
+        "text": "#263740",
+        "muted": "#6E7F88",
+        "accent": "#4E91AE",
+        "accent_dark": "#356F87",
+        "accent_soft": "#DDEDF4",
+        "success": "#4F936B",
+        "danger": "#CE786D",
+        "warning": "#BF8A48",
+        "border": "#D7E6ED",
+        "shadow": "rgba(44, 85, 103, 0.10)",
     },
 }
 
-if "theme" not in st.session_state:
+
+if "theme" not in st.session_state or st.session_state.theme not in THEMES:
     st.session_state.theme = "Sage"
 
 T = THEMES[st.session_state.theme]
@@ -320,6 +322,242 @@ st.markdown(
         color: var(--text);
     }}
 
+    .review-panel {{
+        background: linear-gradient(145deg, var(--surface2), var(--surface));
+        border: 1px solid var(--border);
+        border-radius: 20px;
+        padding: 1rem 1.05rem;
+        box-shadow: 0 10px 26px var(--shadow);
+        min-height: 255px;
+    }}
+    .review-kicker {{
+        color: var(--danger);
+        font-size: .75rem;
+        text-transform: uppercase;
+        letter-spacing: .1em;
+        font-weight: 800;
+        margin-bottom: .5rem;
+    }}
+    .review-question {{
+        font-weight: 700;
+        font-size: .98rem;
+        line-height: 1.45;
+        margin-bottom: .8rem;
+    }}
+    .review-row {{
+        display: flex;
+        justify-content: space-between;
+        gap: .75rem;
+        padding: .55rem .7rem;
+        border-radius: 11px;
+        margin-top: .4rem;
+        font-size: .84rem;
+    }}
+    .review-row.wrong {{ background: rgba(217,122,104,.10); color: var(--danger); }}
+    .review-row.correct {{ background: rgba(78,138,99,.11); color: var(--success); }}
+    .review-explanation {{
+        margin-top: .75rem;
+        padding-top: .75rem;
+        border-top: 1px solid var(--border);
+        color: var(--muted);
+        line-height: 1.55;
+        font-size: .84rem;
+    }}
+    .empty-review {{
+        min-height: 255px;
+        border: 1px dashed var(--border);
+        border-radius: 20px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        text-align: center;
+        padding: 1.4rem;
+        background: rgba(255,255,255,.20);
+    }}
+    .empty-review-icon {{ font-size: 2rem; margin-bottom: .4rem; }}
+    .empty-review-title {{ font-weight: 800; color: var(--text); }}
+    .empty-review-text {{ color: var(--muted); line-height: 1.55; font-size: .86rem; margin-top: .25rem; }}
+
+    /* -----------------------------------------------------------------
+       FORCE LIGHT THEMED STREAMLIT / BASEWEB CONTROLS
+       Streamlit can inherit the browser/app dark color-scheme.  The rules
+       below deliberately override that inheritance for the date picker,
+       selectbox and their portal/popover elements.
+       ----------------------------------------------------------------- */
+    [data-baseweb="select"],
+    [data-baseweb="input"],
+    [data-testid="stDateInput"],
+    [data-testid="stDateInput"] *,
+    [data-testid="stSelectbox"] * {{
+        color-scheme: light !important;
+    }}
+
+    [data-baseweb="select"] > div,
+    [data-baseweb="select"] [role="combobox"],
+    [data-baseweb="input"] > div,
+    [data-baseweb="input"] > div > div,
+    [data-testid="stDateInput"] [data-baseweb="input"],
+    [data-testid="stDateInput"] [data-baseweb="input"] > div,
+    [data-testid="stDateInput"] [data-baseweb="input"] > div > div {{
+        background: var(--surface) !important;
+        background-color: var(--surface) !important;
+        color: var(--text) !important;
+        border-color: var(--border) !important;
+        border-radius: 12px !important;
+        box-shadow: none !important;
+    }}
+
+    [data-testid="stDateInput"] input,
+    [data-testid="stSelectbox"] input,
+    [data-baseweb="select"] input,
+    [data-baseweb="input"] input {{
+        background: transparent !important;
+        background-color: transparent !important;
+        color: var(--text) !important;
+        -webkit-text-fill-color: var(--text) !important;
+        caret-color: var(--accent-dark) !important;
+        color-scheme: light !important;
+    }}
+
+    [data-testid="stDateInput"] svg,
+    [data-testid="stSelectbox"] svg,
+    [data-baseweb="select"] svg {{
+        fill: var(--accent-dark) !important;
+        color: var(--accent-dark) !important;
+    }}
+
+    /* Date-picker popup is rendered in a portal outside the DateInput block. */
+    [data-baseweb="popover"],
+    [data-baseweb="popover"] > div,
+    [data-baseweb="popover"] > div > div,
+    [data-baseweb="calendar"],
+    [data-baseweb="calendar"] > div,
+    [data-baseweb="calendar"] > div > div,
+    [role="dialog"],
+    [role="dialog"] > div {{
+        background: var(--surface) !important;
+        background-color: var(--surface) !important;
+        color: var(--text) !important;
+        border-color: var(--border) !important;
+        color-scheme: light !important;
+    }}
+
+    [data-baseweb="calendar"] {{
+        border-radius: 16px !important;
+        box-shadow: 0 18px 45px var(--shadow) !important;
+        overflow: hidden !important;
+    }}
+
+    [data-baseweb="calendar"] *,
+    [role="dialog"] * {{
+        color: var(--text) !important;
+        color-scheme: light !important;
+    }}
+
+    [data-baseweb="calendar"] button {{
+        color: var(--text) !important;
+        background: transparent !important;
+        background-color: transparent !important;
+        border-radius: 9px !important;
+        border-color: transparent !important;
+    }}
+
+    [data-baseweb="calendar"] button:hover {{
+        background: var(--accent-soft) !important;
+        background-color: var(--accent-soft) !important;
+        color: var(--accent-dark) !important;
+    }}
+
+    [data-baseweb="calendar"] [aria-selected="true"] {{
+        background: var(--accent) !important;
+        background-color: var(--accent) !important;
+        color: #ffffff !important;
+    }}
+
+    [data-baseweb="calendar"] [aria-current="date"] {{
+        color: var(--accent-dark) !important;
+        font-weight: 800 !important;
+    }}
+
+    /* Month/year selector menus opened from the calendar. */
+    [data-baseweb="menu"],
+    [data-baseweb="menu"] > div,
+    [role="listbox"],
+    [role="listbox"] > div,
+    [role="option"] {{
+        background: var(--surface) !important;
+        background-color: var(--surface) !important;
+        color: var(--text) !important;
+        color-scheme: light !important;
+    }}
+
+    [role="option"]:hover,
+    [role="option"][aria-selected="true"] {{
+        background: var(--accent-soft) !important;
+        background-color: var(--accent-soft) !important;
+        color: var(--accent-dark) !important;
+    }}
+
+    /* Sidebar Theme select gets an extra explicit light surface. */
+    [data-testid="stSidebar"] [data-baseweb="select"] > div,
+    [data-testid="stSidebar"] [data-baseweb="select"] [role="combobox"] {{
+        background: var(--surface) !important;
+        background-color: var(--surface) !important;
+        color: var(--text) !important;
+        color-scheme: light !important;
+        border: 1px solid var(--border) !important;
+    }}
+
+    .calendar-label {{
+        color: var(--muted);
+        font-size: .84rem;
+        font-weight: 700;
+        margin: .25rem 0 .55rem;
+    }}
+    .calendar-title {{
+        text-align: center;
+        font-weight: 800;
+        color: var(--text);
+        padding: .55rem 0;
+    }}
+    .calendar-weekday {{
+        text-align: center;
+        color: var(--muted);
+        font-size: .72rem;
+        font-weight: 800;
+        padding: .3rem 0 .45rem;
+        text-transform: uppercase;
+        letter-spacing: .04em;
+    }}
+    .calendar-empty {{
+        height: 2.35rem;
+    }}
+    .calendar-selected {{
+        margin-top: .65rem;
+        padding: .65rem .8rem;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--accent-soft);
+        color: var(--accent-dark);
+        font-size: .82rem;
+    }}
+    /* Custom calendar buttons stay fully in the active light theme. */
+    div[data-testid="stHorizontalBlock"] div[data-testid="stButton"] > button {{
+        background: var(--surface) !important;
+        color: var(--text) !important;
+        border: 1px solid var(--border) !important;
+        box-shadow: none !important;
+        min-height: 2.35rem !important;
+        padding: .25rem .1rem !important;
+        font-size: .82rem !important;
+    }}
+    div[data-testid="stHorizontalBlock"] div[data-testid="stButton"] > button:hover {{
+        background: var(--accent-soft) !important;
+        color: var(--accent-dark) !important;
+        border-color: var(--accent) !important;
+    }}
+
     @media (max-width: 900px) {{
         .block-container {{ padding: 1.25rem 1rem 3rem; }}
         .hero {{ padding: 1.6rem; border-radius: 22px; }}
@@ -357,7 +595,7 @@ except Exception as exc:
 def reset_quiz_state():
     keys = [
         "quiz_questions", "current_index", "quiz_completed", "celebration_done",
-        "source_df", "q_mode", "num_q", "quiz_started_at"
+        "source_df", "q_mode", "num_q", "quiz_started_at", "review_panel"
     ]
     for key in keys:
         st.session_state.pop(key, None)
@@ -415,6 +653,7 @@ def initialize_quiz(source_df, q_mode, num_q):
         "quiz_completed": False,
         "celebration_done": False,
         "quiz_started_at": pd.Timestamp.now().strftime("%H:%M"),
+        "review_panel": None,
     })
 
 
@@ -456,6 +695,81 @@ def render_palette(questions, current):
     st.markdown('<div class="palette">' + ''.join(items) + '</div>', unsafe_allow_html=True)
 
 
+
+def _shift_month(d, delta):
+    y, m = d.year, d.month + delta
+    while m < 1:
+        y -= 1
+        m += 12
+    while m > 12:
+        y += 1
+        m -= 12
+    return date(y, m, 1)
+
+
+def render_calendar_picker(label, state_key, default_value):
+    """Lightweight themed calendar made from Streamlit buttons.
+    This deliberately avoids Streamlit's BaseWeb date-picker popup, which can
+    inherit a dark browser/Cloud theme even when the rest of the app is light.
+    """
+    selected_key = f"{state_key}_selected"
+    month_key = f"{state_key}_month"
+    if selected_key not in st.session_state:
+        st.session_state[selected_key] = default_value
+    if month_key not in st.session_state:
+        st.session_state[month_key] = date(default_value.year, default_value.month, 1)
+
+    selected = st.session_state[selected_key]
+    month_start = st.session_state[month_key]
+
+    st.markdown(f'<div class="calendar-label">{label}</div>', unsafe_allow_html=True)
+    nav_l, nav_title, nav_r = st.columns([0.7, 3.1, 0.7])
+    with nav_l:
+        if st.button("‹", key=f"{state_key}_prev", use_container_width=True):
+            st.session_state[month_key] = _shift_month(month_start, -1)
+            st.rerun()
+    with nav_title:
+        st.markdown(
+            f'<div class="calendar-title">{month_start.strftime("%B %Y")}</div>',
+            unsafe_allow_html=True,
+        )
+    with nav_r:
+        if st.button("›", key=f"{state_key}_next", use_container_width=True):
+            st.session_state[month_key] = _shift_month(month_start, 1)
+            st.rerun()
+
+    weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    cols = st.columns(7, gap="small")
+    for col, wd in zip(cols, weekdays):
+        with col:
+            st.markdown(f'<div class="calendar-weekday">{wd}</div>', unsafe_allow_html=True)
+
+    first_weekday, days_in_month = calendar.monthrange(month_start.year, month_start.month)
+    # Monday-based calendar; blank cells first.
+    cells = [None] * first_weekday + list(range(1, days_in_month + 1))
+    while len(cells) % 7:
+        cells.append(None)
+
+    for row_start in range(0, len(cells), 7):
+        cols = st.columns(7, gap="small")
+        for col, day_num in zip(cols, cells[row_start:row_start + 7]):
+            with col:
+                if day_num is None:
+                    st.markdown('<div class="calendar-empty"></div>', unsafe_allow_html=True)
+                    continue
+                d = date(month_start.year, month_start.month, day_num)
+                label_text = f"✓ {day_num}" if d == selected else str(day_num)
+                if st.button(label_text, key=f"{state_key}_day_{d.isoformat()}", use_container_width=True):
+                    st.session_state[selected_key] = d
+                    st.rerun()
+
+    st.markdown(
+        f'<div class="calendar-selected">Selected: <b>{selected.strftime("%d %B %Y")}</b></div>',
+        unsafe_allow_html=True,
+    )
+    return selected
+
+
 # =========================================================
 # SIDEBAR
 # =========================================================
@@ -464,15 +778,30 @@ st.sidebar.caption("A calm little place to turn daily news into long-term memory
 
 with st.sidebar:
     st.markdown("### Workspace")
+    pages = ["🏠 Dashboard", "📅 Daily Quiz", "🎯 Custom Test"]
+    current_page = st.session_state.get("app_page", pages[0])
     app_page = st.radio(
         "Go to",
-        ["🏠 Dashboard", "📅 Daily Quiz", "🎯 Custom Test"],
+        pages,
+        index=pages.index(current_page),
         label_visibility="collapsed",
-        key="app_page",
     )
+    if app_page != current_page:
+        reset_quiz_state()
+        st.session_state.app_page = app_page
+        st.rerun()
 
     st.markdown("### Appearance")
-    selected_theme = st.selectbox("Theme", list(THEMES.keys()), index=list(THEMES.keys()).index(st.session_state.theme))
+    theme_labels = {"🌿 Sage": "Sage", "💜 Lavender": "Lavender", "🩵 Sky": "Sky"}
+    current_label = next(k for k, v in theme_labels.items() if v == st.session_state.theme)
+    selected_label = st.radio(
+        "Theme",
+        list(theme_labels.keys()),
+        index=list(theme_labels.keys()).index(current_label),
+        label_visibility="collapsed",
+        key="theme_radio",
+    )
+    selected_theme = theme_labels[selected_label]
     if selected_theme != st.session_state.theme:
         st.session_state.theme = selected_theme
         st.rerun()
@@ -570,7 +899,7 @@ elif app_page == "📅 Daily Quiz" and "quiz_questions" not in st.session_state:
 
     left, right = st.columns([1.15, 1])
     with left:
-        selected_date = st.date_input("Study date", value=default_date)
+        selected_date = render_calendar_picker("Study date", "daily_calendar", default_date)
         filtered_df = df[df["Date"] == selected_date].copy()
         if filtered_df.empty:
             st.warning("No questions are available for this date.")
@@ -607,9 +936,9 @@ elif app_page == "🎯 Custom Test" and "quiz_questions" not in st.session_state
     min_date, max_date = df["Date"].min(), df["Date"].max()
     c1, c2 = st.columns(2)
     with c1:
-        start_date = st.date_input("Start date", value=min_date)
+        start_date = render_calendar_picker("Start date", "custom_start_calendar", min_date)
     with c2:
-        end_date = st.date_input("End date", value=max_date)
+        end_date = render_calendar_picker("End date", "custom_end_calendar", max_date)
 
     if start_date > end_date:
         st.error("Start date must be on or before end date.")
@@ -762,17 +1091,20 @@ elif "quiz_questions" in st.session_state:
                 st.radio("Answer", q_data["options"], index=selected_index, disabled=True, key=f"locked_{curr_idx}", label_visibility="collapsed")
 
                 if q_data["user_answer"] is None:
-                    st.warning("You skipped this one. That’s okay—make the explanation count.")
+                    st.warning("You skipped this question. Your answer is now locked.")
                 elif q_data["user_answer"] == q_data["correct"]:
-                    st.success("Correct! Nice work.")
+                    st.success("✅ Correct! Your answer is locked. Read the explanation before moving on.")
                 else:
-                    st.error(f"Not quite. You chose: {q_data['user_answer']}")
+                    st.error(f"❌ Incorrect. Your answer is locked: **{q_data['user_answer']}**")
 
+                # The explanation belongs to THIS question. It stays visible while
+                # the answer controls are disabled, and the learner must press Next
+                # to advance.
                 st.markdown(
                     f"""
-                    <div class="card" style="margin-top:1rem;background:var(--surface2)">
-                        <div class="metric-label">Answer & explanation</div>
-                        <div style="font-weight:700;margin:.35rem 0 .55rem">✅ {q_data['correct']}</div>
+                    <div class="card" style="margin-top:1rem;background:var(--surface2);border-left:4px solid var(--accent)">
+                        <div class="metric-label">📖 Explanation for this question</div>
+                        <div style="font-weight:700;margin:.35rem 0 .55rem">✅ Correct answer: {q_data['correct']}</div>
                         <div style="color:var(--muted);line-height:1.65">{q_data['explanation']}</div>
                     </div>
                     """,
@@ -786,10 +1118,7 @@ elif "quiz_questions" in st.session_state:
                         st.session_state.current_index -= 1
                         st.rerun()
                 with c2:
-                    if st.button("🔁 Retake", use_container_width=True):
-                        q_data["user_answer"] = None
-                        q_data["locked"] = False
-                        st.rerun()
+                    st.caption("Answer locked • Explanation shown")
                 with c3:
                     if curr_idx < total_q - 1:
                         if st.button("Next →", type="primary", use_container_width=True):
@@ -800,15 +1129,34 @@ elif "quiz_questions" in st.session_state:
                             st.session_state.quiz_completed = True
                             st.rerun()
             else:
-                selected_option = st.radio(
-                    "Select your answer",
-                    q_data["options"],
-                    index=None,
-                    key=f"active_{curr_idx}",
-                    label_visibility="collapsed",
-                )
-                st.caption("Choose the best answer. You can review locked questions before finishing.")
+                # Answering a question is a two-step interaction:
+                # 1) choose an option and press Next/Check Answer
+                # 2) the same question becomes locked and its explanation appears
+                #    before the learner can move to the next question.
+                options_col, explanation_col = st.columns([1.45, 1], gap="large")
+                with options_col:
+                    selected_option = st.radio(
+                        "Select your answer",
+                        q_data["options"],
+                        index=None,
+                        key=f"active_{curr_idx}",
+                        label_visibility="collapsed",
+                    )
+                    st.caption("Choose an answer, then press **Check Answer**. Your choice will lock and the explanation will appear before you continue.")
 
+                with explanation_col:
+                    st.markdown(
+                        """
+                        <div class="empty-review">
+                            <div class="empty-review-icon">💡</div>
+                            <div class="empty-review-title">Explanation will appear here</div>
+                            <div class="empty-review-text">After you check your answer, this space will show the correct answer and explanation for <b>this question</b>.</div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                st.markdown("<div style='height:.5rem'></div>", unsafe_allow_html=True)
                 c1, c2, c3 = st.columns(3)
                 with c1:
                     if curr_idx > 0 and st.button("← Previous", use_container_width=True):
@@ -818,19 +1166,18 @@ elif "quiz_questions" in st.session_state:
                     if st.button("Skip", use_container_width=True):
                         q_data["user_answer"] = None
                         q_data["locked"] = True
+                        # Stay on the same question so the skipped state and explanation
+                        # are visible before the learner moves on.
                         st.rerun()
                 with c3:
-                    label = "Submit & Finish" if curr_idx == total_q - 1 else "Submit & Next"
-                    if st.button(label, type="primary", use_container_width=True):
+                    if st.button("Check Answer", type="primary", use_container_width=True):
                         if selected_option is None:
                             st.warning("Pick an option or use Skip.")
                         else:
                             q_data["user_answer"] = selected_option
                             q_data["locked"] = True
-                            if curr_idx == total_q - 1:
-                                st.session_state.quiz_completed = True
-                            else:
-                                st.session_state.current_index += 1
+                            # Do NOT advance yet. The learner must see the explanation
+                            # for this exact question and explicitly press Next.
                             st.rerun()
 
             st.markdown('</div>', unsafe_allow_html=True)
