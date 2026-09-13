@@ -606,8 +606,22 @@ def load_data():
     missing = [c for c in required if c not in df.columns]
     if missing:
         raise ValueError(f"Missing columns in Google Sheet: {', '.join(missing)}")
-    df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.date
+
+    # Google Sheets can return dates in several text formats. Parse the column
+    # defensively so a format change does not turn the entire column into NaN.
+    raw_dates = df["Date"].astype("string").str.strip()
+    parsed_dates = pd.to_datetime(raw_dates, errors="coerce", format="mixed", dayfirst=True)
+    if parsed_dates.notna().sum() == 0:
+        parsed_dates = pd.to_datetime(raw_dates, errors="coerce", format="mixed", dayfirst=False)
+
+    df["Date"] = parsed_dates.dt.date
     df = df.dropna(subset=["Date", "Question"]).reset_index(drop=True)
+
+    if df.empty:
+        raise ValueError(
+            "No valid quiz rows were found in the Google Sheet. "
+            "Please check that the Date column contains real dates and that the sheet has questions."
+        )
     return df
 
 try:
@@ -998,7 +1012,8 @@ with st.sidebar:
     st.metric("Questions", f"{len(df):,}")
     st.metric("Study days", f"{df['Date'].nunique():,}")
     latest = df["Date"].max()
-    st.caption(f"Latest sheet date · {latest.strftime('%d %b %Y') if latest else '—'}")
+    latest_label = latest.strftime("%d %b %Y") if isinstance(latest, date) else "—"
+    st.caption(f"Latest sheet date · {latest_label}")
 
     if st.button("🔄 Sync Google Sheet", use_container_width=True):
         st.cache_data.clear()
