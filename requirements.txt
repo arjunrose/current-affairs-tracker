@@ -1,5 +1,0 @@
-streamlit
-pandas
-plotly
-Authlib>=1.3.2
-supabase>=2.31.0
