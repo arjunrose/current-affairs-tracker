@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from supabase import create_client
 
-APP_BUILD = "SUPABASE-INSTANT-CUSTOM-SELECT-2026-09-14"
+APP_BUILD = "SUPABASE-GOOGLE-LOGIN-FIXED-2026-09-14"
 
 # =========================================================
 # PAGE + APP CONFIG
@@ -54,50 +54,47 @@ supabase = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY) if SUPABASE_CONFIGUR
 # =========================================================
 # AUTH HELPERS
 # =========================================================
+# Google/OIDC authentication is mandatory in the deployed app.
+# There is intentionally NO Demo User fallback here.
+
 def auth_is_configured():
-    """Return True when Google OIDC settings are available."""
+    """Check whether the required Streamlit OIDC settings exist."""
     try:
         auth = st.secrets.get("auth", {})
         return bool(
             auth.get("client_id")
             and auth.get("client_secret")
             and auth.get("server_metadata_url")
+            and auth.get("redirect_uri")
+            and auth.get("cookie_secret")
         )
     except Exception:
         return False
 
 
 def get_auth_user():
-    """Return the authenticated Google user, or a local demo user."""
-    if auth_is_configured():
-        try:
-            if not st.user.is_logged_in:
-                return None
-        except Exception:
+    """Return the currently authenticated Google user; never create a demo user."""
+    try:
+        if not st.user.is_logged_in:
             return None
+    except Exception:
+        return None
 
-        email = str(getattr(st.user, "email", "") or "").strip().lower()
-        name = str(
-            getattr(st.user, "name", "")
-            or (email.split("@")[0] if email else "User")
-        ).strip()
-        picture = str(getattr(st.user, "picture", "") or "").strip()
+    email = str(getattr(st.user, "email", "") or "").strip().lower()
+    name = str(
+        getattr(st.user, "name", "")
+        or (email.split("@")[0] if email else "User")
+    ).strip()
+    picture = str(getattr(st.user, "picture", "") or "").strip()
 
-        if not email:
-            return None
-
-        return {
-            "id": email,
-            "email": email,
-            "name": name,
-            "picture": picture,
-        }
+    if not email:
+        return None
 
     return {
-        "id": "demo@local",
-        "email": "demo@local",
-        "name": "Demo User",
-        "picture": "",
+        "id": email,
+        "email": email,
+        "name": name,
+        "picture": picture,
     }
 
 
@@ -404,7 +401,7 @@ def db_all_users():
 
 def load_persistent_mistakes():
     ensure_progress_state()
-    email = st.session_state.get("auth_user", {}).get("email", "demo@local")
+    email = st.session_state.get("auth_user", {}).get("email", "")
     if not supabase:
         return
     try:
@@ -440,7 +437,7 @@ def load_persistent_mistakes():
 
 def load_persistent_history():
     ensure_progress_state()
-    email = st.session_state.get("auth_user", {}).get("email", "demo@local")
+    email = st.session_state.get("auth_user", {}).get("email", "")
     if not supabase:
         return
     try:
@@ -1206,7 +1203,7 @@ def question_key(q):
 def update_mistake_bank(q):
     ensure_progress_state()
     key = question_key(q)
-    email = st.session_state.get("auth_user", {}).get("email", "demo@local")
+    email = st.session_state.get("auth_user", {}).get("email", "")
     if q["user_answer"] is not None and q["user_answer"] == q["correct"]:
         st.session_state.mistake_bank.pop(key, None)
         db_remove_mistake(email, q)
@@ -1242,14 +1239,14 @@ def record_quiz_result(questions):
         "total": len(questions),
         "mode": mode,
     })
-    user_email = st.session_state.get("auth_user", {}).get("email", "demo@local")
+    user_email = st.session_state.get("auth_user", {}).get("email", "")
     db_record_attempt(user_email, questions, mode)
     _clear_supabase_read_cache()
     st.session_state.quiz_recorded = True
 
 
 def progress_stats():
-    ensure_progress_state(); email=st.session_state.get("auth_user",{}).get("email","demo@local")
+    ensure_progress_state(); email=st.session_state.get("auth_user",{}).get("email","")
     if not supabase:return {"quizzes":0,"correct":0,"attended":0,"accuracy":0,"current_streak":0,"best_streak":0,"dates":[]}
     try:
         rows=_cached_sb_user_rows("quiz_attempts",email); quizzes=len(rows); correct=sum(int(r.get("correct",0) or 0) for r in rows); attended=sum(int(r.get("correct",0) or 0)+int(r.get("incorrect",0) or 0) for r in rows); accuracy=correct/attended*100 if attended else 0
@@ -1502,20 +1499,41 @@ ensure_progress_state()
 # =========================================================
 # AUTH GATE + USER RECORD
 # =========================================================
-st.session_state.setdefault("auth_user", get_auth_user())
-if auth_is_configured() and st.session_state.auth_user is None:
+# Never continue as Demo User. If authentication is not configured,
+# stop the app and tell the owner exactly what must be configured.
+if not auth_is_configured():
+    st.error("Google login is not configured for this deployment.")
+    st.info(
+        "Open Streamlit Cloud → Manage app → Settings → Secrets and make sure "
+        "the [auth] section contains redirect_uri, cookie_secret, client_id, "
+        "client_secret and server_metadata_url."
+    )
+    st.stop()
+
+try:
+    _logged_in = bool(st.user.is_logged_in)
+except Exception:
+    _logged_in = False
+
+if not _logged_in:
     st.markdown("""
     <div class='hero'>
-        <div class='eyebrow'>Current Affairs Study Studio</div>
+        <div class='eyebrow'>CURRENT AFFAIRS STUDY STUDIO</div>
         <h1>Welcome back.</h1>
         <div class='hero-sub'>Sign in with Google to keep your streak, accuracy, mistakes and quiz history tied to your own profile.</div>
     </div>
     """, unsafe_allow_html=True)
-    if st.button("Continue with Google", type="primary", use_container_width=True):
+    if st.button("🔐 Continue with Google", type="primary", use_container_width=True):
         st.login()
     st.stop()
 
-auth_user = st.session_state.auth_user
+# Read the authenticated identity directly from Streamlit OIDC.
+auth_user = get_auth_user()
+if auth_user is None:
+    st.error("Google authentication completed, but no email was returned by the identity provider.")
+    st.stop()
+
+st.session_state["auth_user"] = auth_user
 _current_email = str(auth_user.get("email", "")).strip().lower()
 if st.session_state.get("_profile_synced_email") != _current_email:
     db_upsert_user(auth_user)
@@ -1603,7 +1621,7 @@ with st.sidebar:
     st.markdown("### Profile")
     role_label = {"main_admin": "👑 Main Admin", "admin": "🛠️ Admin", "user": "👤 Student"}[user_role(auth_user["email"])]
     st.caption(f"{auth_user['name']} · {role_label}")
-    if auth_is_configured() and st.button("Sign out", use_container_width=True):
+    if st.button("Sign out", use_container_width=True):
         st.logout()
 
     if st.button("🔄 Sync Google Sheet", use_container_width=True):
