@@ -1514,21 +1514,16 @@ ensure_progress_state()
 # =========================================================
 # AUTH GATE + USER RECORD
 # =========================================================
-# Never continue as Demo User. Authentication must be configured and completed.
-_provider, _auth_cfg = get_auth_provider()
-if not auth_is_configured():
-    st.error("Google login is not configured correctly for this deployment.")
-    st.info(
-        "In Streamlit Cloud → Manage app → Settings → Secrets, use [auth] with "
-        "redirect_uri and cookie_secret, plus either client_id/client_secret/server_metadata_url "
-        "directly under [auth] OR those three keys under [auth.google]."
-    )
-    st.stop()
+# IMPORTANT: Let Streamlit itself validate the OIDC configuration.
+# A manual secrets check can falsely reject a valid Streamlit Cloud setup.
+# Streamlit's st.login()/st.user are the source of truth for authentication.
 
 try:
     _logged_in = bool(st.user.is_logged_in)
-except Exception:
-    _logged_in = False
+except Exception as _auth_read_error:
+    st.error("Streamlit authentication is unavailable in this deployment.")
+    st.exception(_auth_read_error)
+    st.stop()
 
 if not _logged_in:
     st.markdown("""
@@ -1538,15 +1533,13 @@ if not _logged_in:
         <div class='hero-sub'>Sign in with Google to keep your streak, accuracy, mistakes and quiz history tied to your own profile.</div>
     </div>
     """, unsafe_allow_html=True)
-    # Use the correct login call for whichever valid Streamlit config is present.
+
+    # Use the default OIDC provider. For your setup, Google is the provider
+    # configured in Streamlit's [auth] section.
     if st.button("🔐 Continue with Google", type="primary", use_container_width=True):
-        if _provider == "google":
-            st.login("google")
-        else:
-            st.login()
+        st.login()
     st.stop()
 
-# Read the authenticated identity directly from Streamlit OIDC.
 auth_user = get_auth_user()
 if auth_user is None:
     st.error("Google authentication completed, but no email was returned by the identity provider.")
