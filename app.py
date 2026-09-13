@@ -54,26 +54,49 @@ supabase = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY) if SUPABASE_CONFIGUR
 # =========================================================
 # AUTH HELPERS
 # =========================================================
-# Google/OIDC authentication is mandatory in the deployed app.
-# There is intentionally NO Demo User fallback here.
+# Google/OIDC authentication is mandatory.
+# This supports BOTH valid Streamlit configurations:
+#   1) [auth]          -> st.login()
+#   2) [auth.google]   -> st.login("google")
+# This avoids incorrectly treating a named Google provider as missing.
+
+def get_auth_provider():
+    """Return the configured provider name and its config."""
+    try:
+        secrets = st.secrets.to_dict()
+        auth = secrets.get("auth", {}) if isinstance(secrets, dict) else {}
+        if not isinstance(auth, dict):
+            return None, {}
+
+        # Single/default provider: all OIDC keys are directly under [auth].
+        if all(auth.get(k) for k in ("client_id", "client_secret", "server_metadata_url")):
+            return None, auth
+
+        # Named Google provider: [auth.google].
+        google = auth.get("google", {})
+        if isinstance(google, dict) and all(google.get(k) for k in ("client_id", "client_secret", "server_metadata_url")):
+            return "google", google
+    except Exception:
+        pass
+    return None, {}
+
 
 def auth_is_configured():
-    """Check whether the required Streamlit OIDC settings exist."""
+    """Check for the required Streamlit OIDC configuration."""
+    provider, auth_cfg = get_auth_provider()
     try:
-        auth = st.secrets.get("auth", {})
+        shared = st.secrets.get("auth", {})
         return bool(
-            auth.get("client_id")
-            and auth.get("client_secret")
-            and auth.get("server_metadata_url")
-            and auth.get("redirect_uri")
-            and auth.get("cookie_secret")
+            auth_cfg
+            and shared.get("redirect_uri")
+            and shared.get("cookie_secret")
         )
     except Exception:
         return False
 
 
 def get_auth_user():
-    """Return the currently authenticated Google user; never create a demo user."""
+    """Return the authenticated Google user; never create a demo user."""
     try:
         if not st.user.is_logged_in:
             return None
@@ -81,21 +104,12 @@ def get_auth_user():
         return None
 
     email = str(getattr(st.user, "email", "") or "").strip().lower()
-    name = str(
-        getattr(st.user, "name", "")
-        or (email.split("@")[0] if email else "User")
-    ).strip()
+    name = str(getattr(st.user, "name", "") or (email.split("@")[0] if email else "User")).strip()
     picture = str(getattr(st.user, "picture", "") or "").strip()
-
     if not email:
         return None
 
-    return {
-        "id": email,
-        "email": email,
-        "name": name,
-        "picture": picture,
-    }
+    return {"id": email, "email": email, "name": name, "picture": picture}
 
 
 def user_role(email):
@@ -109,6 +123,7 @@ def user_role(email):
 
 def is_admin(email):
     return str(email or "").strip().lower() in ALL_ADMIN_EMAILS
+
 
 def _sb_data(response):
     return getattr(response, "data", None) or []
@@ -1499,14 +1514,14 @@ ensure_progress_state()
 # =========================================================
 # AUTH GATE + USER RECORD
 # =========================================================
-# Never continue as Demo User. If authentication is not configured,
-# stop the app and tell the owner exactly what must be configured.
+# Never continue as Demo User. Authentication must be configured and completed.
+_provider, _auth_cfg = get_auth_provider()
 if not auth_is_configured():
-    st.error("Google login is not configured for this deployment.")
+    st.error("Google login is not configured correctly for this deployment.")
     st.info(
-        "Open Streamlit Cloud → Manage app → Settings → Secrets and make sure "
-        "the [auth] section contains redirect_uri, cookie_secret, client_id, "
-        "client_secret and server_metadata_url."
+        "In Streamlit Cloud → Manage app → Settings → Secrets, use [auth] with "
+        "redirect_uri and cookie_secret, plus either client_id/client_secret/server_metadata_url "
+        "directly under [auth] OR those three keys under [auth.google]."
     )
     st.stop()
 
@@ -1523,8 +1538,12 @@ if not _logged_in:
         <div class='hero-sub'>Sign in with Google to keep your streak, accuracy, mistakes and quiz history tied to your own profile.</div>
     </div>
     """, unsafe_allow_html=True)
+    # Use the correct login call for whichever valid Streamlit config is present.
     if st.button("🔐 Continue with Google", type="primary", use_container_width=True):
-        st.login()
+        if _provider == "google":
+            st.login("google")
+        else:
+            st.login()
     st.stop()
 
 # Read the authenticated identity directly from Streamlit OIDC.
