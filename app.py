@@ -570,23 +570,80 @@ def db_remove_mistake(user_email, q):
 
 
 def db_user_stats(email):
+    """Return admin-facing stats for one profile using the actual UUID-based schema.
+
+    Current deployed schema: profiles.id -> quiz_attempts.user_id / mistakes.user_id.
+    Legacy deployments may still store an email-like owner field, so we retain a
+    safe fallback without ever changing the signed-in admin's session user id.
+    """
+    empty = {"quizzes": 0, "correct": 0, "attended": 0, "total": 0,
+             "accuracy": 0, "mistakes": 0, "last_seen": "—"}
     if not supabase:
-        return {"quizzes": 0, "correct": 0, "attended": 0, "total": 0, "accuracy": 0, "mistakes": 0, "last_seen": "—"}
+        return empty
+
     try:
         email = str(email or "").strip().lower()
-        def owner(row):
-            return str(row.get("email", row.get("user_email", row.get("owner_email", "")))).strip().lower()
-        attempts = [r for r in _cached_sb_all_rows("quiz_attempts") if owner(r) == email]
-        mistakes = [r for r in _cached_sb_all_rows("mistakes") if owner(r) == email]
-        profiles = [r for r in _cached_sb_all_rows("profiles") if owner(r) == email]
+        if not email:
+            return empty
+
+        # Resolve the selected profile UUID from the already-cached profiles table.
+        # IMPORTANT: do not call _sb_profile_id() here because that helper updates
+        # the signed-in user's session UUID; an admin is inspecting another user.
+        profiles = _cached_sb_all_rows("profiles")
+        profile = next(
+            (r for r in profiles
+             if str(r.get("email", r.get("user_email", r.get("owner_email", ""))))
+             .strip().lower() == email),
+            None,
+        )
+        profile_id = str(profile.get("id", "")).strip() if profile else ""
+
+        attempt_rows = _cached_sb_all_rows("quiz_attempts")
+        mistake_rows = _cached_sb_all_rows("mistakes")
+
+        if profile_id:
+            # CURRENT SCHEMA: child tables reference profiles.id through user_id.
+            attempts = [
+                r for r in attempt_rows
+                if str(r.get("user_id", "")).strip() == profile_id
+            ]
+            mistakes = [
+                r for r in mistake_rows
+                if str(r.get("user_id", "")).strip() == profile_id
+            ]
+        else:
+            # LEGACY SCHEMA FALLBACK: match email-like ownership columns.
+            def owner(row):
+                return str(
+                    row.get("email", row.get("user_email", row.get("owner_email", "")))
+                ).strip().lower()
+            attempts = [r for r in attempt_rows if owner(r) == email]
+            mistakes = [r for r in mistake_rows if owner(r) == email]
+
         correct = sum(int(x.get("correct", 0) or 0) for x in attempts)
-        attended = sum(int(x.get("correct", 0) or 0) + int(x.get("incorrect", 0) or 0) for x in attempts)
-        total = attended + sum(int(x.get("skipped", 0) or 0) for x in attempts)
-        return {"quizzes": len(attempts), "correct": correct, "attended": attended, "total": total,
-                "accuracy": correct / attended * 100 if attended else 0,
-                "mistakes": len(mistakes), "last_seen": profiles[0].get("last_seen", "—") if profiles else "—"}
+        incorrect = sum(int(x.get("incorrect", 0) or 0) for x in attempts)
+        skipped = sum(int(x.get("skipped", 0) or 0) for x in attempts)
+        attended = correct + incorrect
+
+        # Prefer the stored total_questions value, with a safe fallback for older rows.
+        total = sum(
+            int(x.get("total_questions", x.get("total", 0)) or 0)
+            for x in attempts
+        )
+        if total <= 0 and attempts:
+            total = attended + skipped
+
+        return {
+            "quizzes": len(attempts),
+            "correct": correct,
+            "attended": attended,
+            "total": total,
+            "accuracy": correct / attended * 100 if attended else 0,
+            "mistakes": len(mistakes),
+            "last_seen": profile.get("last_seen", "—") if profile else "—",
+        }
     except Exception:
-        return {"quizzes": 0, "correct": 0, "attended": 0, "total": 0, "accuracy": 0, "mistakes": 0, "last_seen": "—"}
+        return empty
 
 def db_all_users():
     if not supabase:
