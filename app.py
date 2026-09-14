@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from supabase import create_client
 
-APP_BUILD = "SUPABASE-FAST-UI-ADAPTIVE-CUSTOM-TEST-2026-09-14"
+APP_BUILD = "Welcome Buddy!"
 
 # =========================================================
 # PAGE + APP CONFIG
