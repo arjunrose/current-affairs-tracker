@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from supabase import create_client
 
-APP_BUILD = "SUPABASE-USER-ID-PERSISTENCE-FIX-2026-09-14"
+APP_BUILD = "Welcome back buddy!"
 
 # =========================================================
 # PAGE + APP CONFIG
@@ -183,31 +183,42 @@ def _sb_identity_column(table):
 
 
 def _sb_profile_id(email):
-    """Resolve the real profiles.id UUID for a Google email, creating the profile if needed."""
+    """Resolve and cache the real profiles.id UUID for this signed-in user."""
     email = str(email or "").strip().lower()
     if not supabase or not email:
         return None
+
+    cached_email = str(st.session_state.get("_supabase_profile_email", "")).strip().lower()
+    cached_id = st.session_state.get("_supabase_user_id")
+    if cached_email == email and cached_id:
+        return str(cached_id)
+
     try:
         rows = _sb_data(
-            supabase.table("profiles").select("id,email").eq("email", email).limit(1).execute()
+            supabase.table("profiles")
+            .select("id,email")
+            .eq("email", email)
+            .limit(1)
+            .execute()
         )
         if not rows:
-            # The login flow normally creates this row first, but recover gracefully
-            # if a previous run happened before that synchronization.
             auth_user = st.session_state.get("auth_user") or {"email": email, "name": email.split("@")[0]}
             db_upsert_user(auth_user)
             rows = _sb_data(
-                supabase.table("profiles").select("id,email").eq("email", email).limit(1).execute()
+                supabase.table("profiles")
+                .select("id,email")
+                .eq("email", email)
+                .limit(1)
+                .execute()
             )
-        if not rows:
-            st.session_state["supabase_profile_error"] = f"No profile row found for {email}"
+        if not rows or not rows[0].get("id"):
+            st.session_state["supabase_profile_error"] = f"No profile UUID found for {email}"
             return None
-        profile_id = rows[0].get("id")
-        if not profile_id:
-            st.session_state["supabase_profile_error"] = "Profile row exists but has no id UUID"
-            return None
-        st.session_state["_supabase_user_id"] = str(profile_id)
-        return str(profile_id)
+
+        profile_id = str(rows[0]["id"])
+        st.session_state["_supabase_user_id"] = profile_id
+        st.session_state["_supabase_profile_email"] = email
+        return profile_id
     except Exception as exc:
         st.session_state["supabase_profile_error"] = _sb_error(exc)
         return None
@@ -271,6 +282,7 @@ def _sb_rows(table, email=None, order=None):
     return _sb_data(q.execute())
 
 
+@st.cache_data(ttl=60, show_spinner=False)
 def _cached_sb_all_rows(table):
     return _sb_rows(table)
 
@@ -287,6 +299,56 @@ def _clear_supabase_read_cache():
         _cached_sb_user_rows.clear()
     except Exception:
         pass
+    try:
+        _cached_sb_all_rows.clear()
+    except Exception:
+        pass
+
+
+def _invalidate_progress_cache():
+    st.session_state.pop("_progress_cache", None)
+    st.session_state.pop("_progress_cache_at", None)
+
+def _cached_user_attempts(user_id):
+    """Session-local cache for the user's attempts; avoids a Supabase request on every widget rerun."""
+    now = datetime.now().timestamp()
+    cache_at = st.session_state.get("_attempt_rows_cache_at", 0.0)
+    cache = st.session_state.get("_attempt_rows_cache")
+    if cache is not None and now - cache_at < 8:
+        return cache
+    try:
+        rows = _sb_data(
+            supabase.table("quiz_attempts")
+            .select("id,user_id,quiz_type,started_at,completed_at,total_questions,correct,incorrect,skipped,accuracy")
+            .eq("user_id", user_id)
+            .order("completed_at", desc=False)
+            .execute()
+        )
+        st.session_state["_attempt_rows_cache"] = rows
+        st.session_state["_attempt_rows_cache_at"] = now
+        return rows
+    except Exception:
+        return cache or []
+
+def _cached_user_mistake_rows(user_id):
+    """Session-local cache for compact mistakes."""
+    now = datetime.now().timestamp()
+    cache_at = st.session_state.get("_mistake_rows_cache_at", 0.0)
+    cache = st.session_state.get("_mistake_rows_cache")
+    if cache is not None and now - cache_at < 8:
+        return cache
+    try:
+        rows = _sb_data(
+            supabase.table("mistakes")
+            .select("id,user_id,question_id,mistake_count,last_answer")
+            .eq("user_id", user_id)
+            .execute()
+        )
+        st.session_state["_mistake_rows_cache"] = rows
+        st.session_state["_mistake_rows_cache_at"] = now
+        return rows
+    except Exception:
+        return cache or []
 
 
 def _filter_payload_to_schema(table, payload):
@@ -383,14 +445,32 @@ def db_record_attempt(user_email, questions, mode):
     if not supabase:
         return
     correct, incorrect, skipped, attended = answer_counts(questions)
+    completed_at = datetime.now().isoformat(timespec="seconds")
+    started_at = st.session_state.get("quiz_started_at")
+    if not started_at:
+        started_at = completed_at
+    # Older sessions may have stored only HH:MM. Convert those to a real
+    # timestamptz-compatible ISO timestamp before writing to Supabase.
+    if isinstance(started_at, str) and re.fullmatch(r"\d{1,2}:\d{2}", started_at.strip()):
+        now_dt = datetime.now()
+        hh, mm = [int(x) for x in started_at.strip().split(":")]
+        started_at = now_dt.replace(hour=hh, minute=mm, second=0, microsecond=0).isoformat(timespec="seconds")
     attempt = _payload_for_user("quiz_attempts", user_email, {
+        # Current Supabase schema uses quiz_type + started_at + completed_at.
+        # Keep the legacy/stat fields too; schema filtering removes them when
+        # they are not present in older deployments.
         "email": user_email,
-        "completed_at": datetime.now().isoformat(timespec="seconds"),
+        "quiz_type": str(mode),
+        "started_at": started_at,
+        "completed_at": completed_at,
         "mode": str(mode),
         "quiz_mode": str(mode),
         "total": len(questions),
+        "total_questions": len(questions),
         "correct": correct,
+        "correct_answers": correct,
         "incorrect": incorrect,
+        "incorrect_answers": incorrect,
         "skipped": skipped,
         "attended": attended,
         "accuracy": (correct / attended * 100 if attended else 0.0),
@@ -417,6 +497,10 @@ def db_record_attempt(user_email, questions, mode):
             except Exception:
                 pass
         _clear_supabase_read_cache()
+        _invalidate_progress_cache()
+        st.session_state["_attempt_rows_cache"] = []
+        st.session_state["_attempt_rows_cache_at"] = datetime.now().timestamp()
+        # Refresh local cache from the just-written row set only on next stats read.
     except Exception as exc:
         st.session_state["supabase_attempt_error"] = _sb_error(exc)
 
@@ -465,6 +549,8 @@ def db_upsert_mistake(user_email, q):
         else:
             supabase.table("mistakes").insert(payload).execute()
         _clear_supabase_read_cache()
+        st.session_state.pop("_mistake_rows_cache", None)
+        st.session_state.pop("_mistake_rows_cache_at", None)
     except Exception as exc:
         st.session_state["supabase_mistake_error"] = _sb_error(exc)
 
@@ -484,23 +570,71 @@ def db_remove_mistake(user_email, q):
 
 
 def db_user_stats(email):
+    """Return admin-facing stats for one user.
+
+    IMPORTANT: current Supabase child tables use user_id (profiles.id UUID),
+    not an email column. The old admin code filtered quiz_attempts/mistakes
+    by email, so every child-table lookup returned zero even when the user
+    had completed quizzes. We resolve the profile UUID first, then match
+    user_id. Legacy email-owned rows are still supported as a fallback.
+    """
+    empty = {"quizzes": 0, "correct": 0, "attended": 0, "total": 0, "accuracy": 0, "mistakes": 0, "last_seen": "—"}
     if not supabase:
-        return {"quizzes": 0, "correct": 0, "attended": 0, "total": 0, "accuracy": 0, "mistakes": 0, "last_seen": "—"}
+        return empty
     try:
         email = str(email or "").strip().lower()
+        if not email:
+            return empty
+
         def owner(row):
-            return str(row.get("email", row.get("user_email", row.get("owner_email", "")))).strip().lower()
-        attempts = [r for r in _cached_sb_all_rows("quiz_attempts") if owner(r) == email]
-        mistakes = [r for r in _cached_sb_all_rows("mistakes") if owner(r) == email]
-        profiles = [r for r in _cached_sb_all_rows("profiles") if owner(r) == email]
+            return str(
+                row.get("email")
+                or row.get("user_email")
+                or row.get("owner_email")
+                or ""
+            ).strip().lower()
+
+        # Read the cached profile table once and resolve the real UUID.
+        profiles_all = _cached_sb_all_rows("profiles")
+        profile = next((r for r in profiles_all if owner(r) == email), None)
+        profile_id = str(profile.get("id", "")).strip() if profile else ""
+
+        def belongs_to_user(row):
+            row_user_id = str(row.get("user_id", "")).strip()
+            if profile_id and row_user_id:
+                return row_user_id == profile_id
+            # Legacy deployments stored email directly on child rows.
+            return owner(row) == email
+
+        attempts = [r for r in _cached_sb_all_rows("quiz_attempts") if belongs_to_user(r)]
+        mistakes = [r for r in _cached_sb_all_rows("mistakes") if belongs_to_user(r)]
+
         correct = sum(int(x.get("correct", 0) or 0) for x in attempts)
-        attended = sum(int(x.get("correct", 0) or 0) + int(x.get("incorrect", 0) or 0) for x in attempts)
-        total = attended + sum(int(x.get("skipped", 0) or 0) for x in attempts)
-        return {"quizzes": len(attempts), "correct": correct, "attended": attended, "total": total,
-                "accuracy": correct / attended * 100 if attended else 0,
-                "mistakes": len(mistakes), "last_seen": profiles[0].get("last_seen", "—") if profiles else "—"}
-    except Exception:
-        return {"quizzes": 0, "correct": 0, "attended": 0, "total": 0, "accuracy": 0, "mistakes": 0, "last_seen": "—"}
+        attended = sum(
+            int(x.get("correct", 0) or 0) + int(x.get("incorrect", 0) or 0)
+            for x in attempts
+        )
+        total = sum(
+            int(x.get("total_questions", x.get("total", 0)) or 0)
+            for x in attempts
+        )
+        # Some legacy attempts may not have total_questions/total. Fall back
+        # to answered + skipped so their Questions card still remains useful.
+        if total == 0 and attempts:
+            total = attended + sum(int(x.get("skipped", 0) or 0) for x in attempts)
+
+        return {
+            "quizzes": len(attempts),
+            "correct": correct,
+            "attended": attended,
+            "total": total,
+            "accuracy": correct / attended * 100 if attended else 0,
+            "mistakes": len(mistakes),
+            "last_seen": (profile or {}).get("last_seen", "—") if profile else "—",
+        }
+    except Exception as exc:
+        st.session_state["supabase_admin_stats_error"] = _sb_error(exc)
+        return empty
 
 def db_all_users():
     if not supabase:
@@ -514,23 +648,33 @@ def db_all_users():
         return []
 
 def _recover_question_from_bank(question_id, fallback_text=""):
-    """Rehydrate content if the compact mistakes table stores only question_id."""
+    """Rehydrate full question data from the Google Sheet.
+
+    The compact Supabase mistakes table intentionally stores only:
+    user_id, question_id, mistake_count, last_answer.
+    question_id is our stable date|question key, so use it to recover the
+    original options/correct answer/explanation from the Google Sheet.
+    """
     text = str(fallback_text or "")
     qdate = None
     key = str(question_id or "")
+
     if "|" in key:
         date_part, possible_text = key.split("|", 1)
         try:
             qdate = datetime.fromisoformat(date_part).date()
         except Exception:
-            pass
+            qdate = None
         if not text:
             text = possible_text
+
     if not text:
         return None
+
     try:
         for _, row in df.iterrows():
             row_date = row.get("Date")
+
             if isinstance(row_date, pd.Timestamp):
                 row_date = row_date.date()
             elif not isinstance(row_date, date):
@@ -538,16 +682,71 @@ def _recover_question_from_bank(question_id, fallback_text=""):
                     row_date = pd.to_datetime(row_date).date()
                 except Exception:
                     row_date = None
+
             if qdate is not None and row_date != qdate:
                 continue
-            row_question = str(row.get("Question") or row.get("question") or row.get("question_text") or "")
-            if row_question == text:
-                options = [row.get(c) for c in ("A", "B", "C", "D") if row.get(c) not in (None, "")]
-                correct = str(row.get("Answer") or row.get("Correct Answer") or row.get("correct") or "")
-                explanation = str(row.get("Explanation") or row.get("explanation") or "")
-                return {"date": row_date or qdate or date.today(), "question": text, "options": options, "correct": correct, "explanation": explanation}
-    except Exception:
-        pass
+
+            row_question = str(
+                row.get("Question")
+                or row.get("question")
+                or row.get("question_text")
+                or ""
+            )
+
+            if row_question != text:
+                continue
+
+            # These are the real Google Sheet column names used by this app.
+            options = [
+                str(row.get("Option_1"))
+                for _ in [0]
+                if row.get("Option_1") not in (None, "")
+            ] + [
+                str(row.get("Option_2"))
+                for _ in [0]
+                if row.get("Option_2") not in (None, "")
+            ] + [
+                str(row.get("Option_3"))
+                for _ in [0]
+                if row.get("Option_3") not in (None, "")
+            ] + [
+                str(row.get("Option_4"))
+                for _ in [0]
+                if row.get("Option_4") not in (None, "")
+            ]
+
+            correct = str(
+                row.get("Correct_Option")
+                or row.get("Answer")
+                or row.get("Correct Answer")
+                or row.get("correct")
+                or ""
+            ).strip()
+
+            explanation = str(
+                row.get("Explanation")
+                or row.get("explanation")
+                or ""
+            )
+
+            # If the sheet's Correct_Option is "1"/"2"/"3"/"4",
+            # convert it to the corresponding option text.
+            if correct in {"1", "2", "3", "4"} and len(options) >= int(correct):
+                correct = options[int(correct) - 1]
+
+            return {
+                "date": row_date or qdate or date.today(),
+                "question": text,
+                "options": options,
+                "correct": correct,
+                "explanation": explanation,
+            }
+
+    except Exception as exc:
+        st.session_state["supabase_mistake_error"] = (
+            f"Could not rehydrate question {question_id}: {_sb_error(exc)}"
+        )
+
     return None
 
 
@@ -560,17 +759,12 @@ def load_persistent_mistakes():
         user_id = _sb_profile_id(email)
         if not user_id:
             return
-        rows = _sb_data(
-            supabase.table("mistakes")
-            .select("id,question_id,mistake_count,last_answer")
-            .eq("user_id", user_id)
-            .execute()
-        )
+        rows = _cached_user_mistake_rows(user_id)
         bank = {}
         for row in rows:
             key = str(row.get("question_id") or "")
             recovered = _recover_question_from_bank(key)
-            if not recovered:
+            if not recovered or not recovered.get("options"):
                 continue
             item = {
                 **recovered,
@@ -590,7 +784,9 @@ def load_persistent_history():
         return
     try:
         history = []
-        for row in _cached_sb_user_rows("quiz_attempts", email):
+        user_id = _sb_profile_id(email)
+        rows = _cached_user_attempts(user_id) if user_id else []
+        for row in rows:
             d = pd.to_datetime(row.get("completed_at") or row.get("created_at") or row.get("date"), errors="coerce")
             history.append({"completed_on": d.date() if not pd.isna(d) else date.today(),
                             "correct": int(row.get("correct", 0) or 0),
@@ -1417,55 +1613,60 @@ def record_quiz_result(questions):
 
 
 def progress_stats():
-    """Return persisted stats, falling back to this session until DB writes settle."""
+    """Return fast, persisted progress with a short session cache."""
     ensure_progress_state()
-    email = st.session_state.get("auth_user", {}).get("email", "")
-    try:
-        rows = []
-        if supabase and email:
-            user_id = _sb_profile_id(email)
-            if user_id:
-                rows = _sb_data(
-                    supabase.table("quiz_attempts").select("*").eq("user_id", user_id).execute()
-                )
-        # Combine persisted attempts with current-session history if the DB has not
-        # reflected the just-completed quiz yet. Avoid double counting by date+mode+score.
-        persisted = []
-        for r in rows:
-            persisted.append({
-                "completed_on": pd.to_datetime(r.get("completed_at") or r.get("created_at") or r.get("date"), errors="coerce").date()
-                    if not pd.isna(pd.to_datetime(r.get("completed_at") or r.get("created_at") or r.get("date"), errors="coerce"))
-                    else date.today(),
-                "correct": int(r.get("correct", 0) or 0),
-                "incorrect": int(r.get("incorrect", 0) or 0),
-                "skipped": int(r.get("skipped", 0) or 0),
-                "mode": r.get("quiz_mode") or r.get("mode") or "Quiz",
-            })
-        all_attempts = list(persisted)
-        seen = {(x["completed_on"], x["correct"], x["incorrect"], x["skipped"], x["mode"]) for x in persisted}
-        for x in st.session_state.get("study_history", []):
-            key = (x.get("completed_on"), int(x.get("correct", 0)), int(x.get("incorrect", 0)), int(x.get("skipped", 0)), x.get("mode", "Quiz"))
-            if key not in seen:
-                all_attempts.append(x)
-                seen.add(key)
+    now_ts = datetime.now().timestamp()
+    cached = st.session_state.get("_progress_cache")
+    cached_at = st.session_state.get("_progress_cache_at", 0.0)
+    if cached is not None and now_ts - cached_at < 8:
+        return cached
 
-        quizzes = len(all_attempts)
-        correct = sum(int(x.get("correct", 0) or 0) for x in all_attempts)
-        attended = sum(int(x.get("correct", 0) or 0) + int(x.get("incorrect", 0) or 0) for x in all_attempts)
-        accuracy = correct / attended * 100 if attended else 0
-        dates = sorted({x.get("completed_on") for x in all_attempts if x.get("completed_on")})
-        best = cur = 0
-        prev = None
-        for d in dates:
-            cur = cur + 1 if prev is not None and d == prev + timedelta(days=1) else 1
-            best = max(best, cur)
-            prev = d
-        today = date.today()
-        current = cur if dates and dates[-1] in {today, today - timedelta(days=1)} else 0
-        return {"quizzes": quizzes, "correct": correct, "attended": attended, "accuracy": accuracy, "current_streak": current, "best_streak": best, "dates": dates}
-    except Exception as exc:
-        st.session_state["supabase_progress_error"] = _sb_error(exc)
-        return {"quizzes": 0, "correct": 0, "attended": 0, "accuracy": 0, "current_streak": 0, "best_streak": 0, "dates": []}
+    email = str(st.session_state.get("auth_user", {}).get("email", "")).strip().lower()
+    attempts = []
+    if supabase and email:
+        user_id = _sb_profile_id(email)
+        if user_id:
+            attempts = _cached_user_attempts(user_id)
+
+    persisted = []
+    for r in attempts:
+        raw_date = r.get("completed_at") or r.get("started_at") or r.get("date")
+        dt = pd.to_datetime(raw_date, errors="coerce")
+        persisted.append({
+            "completed_on": dt.date() if not pd.isna(dt) else date.today(),
+            "correct": int(r.get("correct", 0) or 0),
+            "incorrect": int(r.get("incorrect", 0) or 0),
+            "skipped": int(r.get("skipped", 0) or 0),
+            "mode": r.get("quiz_type") or "Quiz",
+        })
+
+    all_attempts = list(persisted)
+    seen = {(x["completed_on"], x["correct"], x["incorrect"], x["skipped"], x["mode"]) for x in persisted}
+    for x in st.session_state.get("study_history", []):
+        key = (x.get("completed_on"), int(x.get("correct", 0)), int(x.get("incorrect", 0)), int(x.get("skipped", 0)), x.get("mode", "Quiz"))
+        if key not in seen:
+            all_attempts.append(x)
+            seen.add(key)
+
+    quizzes = len(all_attempts)
+    correct = sum(int(x.get("correct", 0) or 0) for x in all_attempts)
+    attended = sum(int(x.get("correct", 0) or 0) + int(x.get("incorrect", 0) or 0) for x in all_attempts)
+    accuracy = correct / attended * 100 if attended else 0
+    dates = sorted({x.get("completed_on") for x in all_attempts if x.get("completed_on")})
+
+    best = cur = 0
+    prev = None
+    for d in dates:
+        cur = cur + 1 if prev is not None and d == prev + timedelta(days=1) else 1
+        best = max(best, cur)
+        prev = d
+    today = date.today()
+    current = cur if dates and dates[-1] in {today, today - timedelta(days=1)} else 0
+
+    result = {"quizzes": quizzes, "correct": correct, "attended": attended, "accuracy": accuracy, "current_streak": current, "best_streak": best, "dates": dates}
+    st.session_state["_progress_cache"] = result
+    st.session_state["_progress_cache_at"] = now_ts
+    return result
 
 
 def render_progress_strip():
@@ -1521,7 +1722,7 @@ def initialize_quiz_from_records(records):
         "current_index": 0,
         "quiz_completed": False,
         "celebration_done": False,
-        "quiz_started_at": pd.Timestamp.now().strftime("%H:%M"),
+        "quiz_started_at": datetime.now().isoformat(timespec="seconds"),
         "review_panel": None,
         "review_mode": True,
         "quiz_recorded": False,
@@ -1579,7 +1780,7 @@ def initialize_quiz(source_df, q_mode, num_q):
         "current_index": 0,
         "quiz_completed": False,
         "celebration_done": False,
-        "quiz_started_at": pd.Timestamp.now().strftime("%H:%M"),
+        "quiz_started_at": datetime.now().isoformat(timespec="seconds"),
         "review_panel": None,
         "review_mode": False,
         "quiz_recorded": False,
@@ -1731,6 +1932,9 @@ if auth_user is None:
         st.login()
 
     st.stop()
+    
+st.session_state["auth_user"] = auth_user
+# Resolve the Supabase profile UUID once per login session.
 _current_email = str(auth_user.get("email", "")).strip().lower()
 if st.session_state.get("_profile_synced_email") != _current_email:
     db_upsert_user(auth_user)
@@ -1747,6 +1951,7 @@ _db_errors = {
     "History": st.session_state.get("supabase_history_error"),
     "Mistakes": st.session_state.get("supabase_mistake_error"),
     "Progress": st.session_state.get("supabase_progress_error"),
+    "Attempt": st.session_state.get("supabase_attempt_error"),
 }
 _db_errors = {k: v for k, v in _db_errors.items() if v}
 if _db_errors:
@@ -1823,6 +2028,9 @@ with st.sidebar:
 
     if st.button("🔄 Sync Google Sheet", use_container_width=True):
         st.cache_data.clear()
+        _invalidate_progress_cache()
+        st.session_state.pop("_attempt_rows_cache", None)
+        st.session_state.pop("_mistake_rows_cache", None)
         reset_quiz_state()
         st.rerun()
 
