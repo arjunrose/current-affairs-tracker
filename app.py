@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from supabase import create_client
 
-APP_BUILD = "SUPABASE-INSTANT-CUSTOM-SELECT-2026-09-14"
+APP_BUILD = "SUPABASE-USER-ID-PERSISTENCE-FIX-2026-09-14"
 
 # =========================================================
 # PAGE + APP CONFIG
@@ -55,49 +55,55 @@ supabase = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY) if SUPABASE_CONFIGUR
 # AUTH HELPERS
 # =========================================================
 def auth_is_configured():
-    """Return True when Google OIDC settings are available."""
+    """Check whether Streamlit's default OIDC provider is configured."""
     try:
         auth = st.secrets.get("auth", {})
-        return bool(
-            auth.get("client_id")
-            and auth.get("client_secret")
-            and auth.get("server_metadata_url")
-        )
+        if not isinstance(auth, dict):
+            return False
+
+        # For one Google provider, Streamlit expects these three values
+        # directly inside [auth].
+        required = ("client_id", "client_secret", "server_metadata_url")
+        return all(str(auth.get(key, "")).strip() for key in required)
     except Exception:
         return False
 
 
 def get_auth_user():
-    """Return the authenticated Google user, or a local demo user."""
-    if auth_is_configured():
-        try:
-            if not st.user.is_logged_in:
-                return None
-        except Exception:
-            return None
+    """
+    Return the authenticated Google user.
 
-        email = str(getattr(st.user, "email", "") or "").strip().lower()
-        name = str(
-            getattr(st.user, "name", "")
-            or (email.split("@")[0] if email else "User")
-        ).strip()
-        picture = str(getattr(st.user, "picture", "") or "").strip()
+    IMPORTANT:
+    There is deliberately NO Demo User fallback. A real Google identity
+    is required before any study data or Supabase profile is accessed.
+    """
+    if not auth_is_configured():
+        return None
 
-        if not email:
-            return None
+    try:
+        user_data = st.user.to_dict()
+    except Exception:
+        return None
 
-        return {
-            "id": email,
-            "email": email,
-            "name": name,
-            "picture": picture,
-        }
+    # st.user only has is_logged_in when OIDC is configured.
+    if not bool(user_data.get("is_logged_in", False)):
+        return None
+
+    email = str(user_data.get("email", "") or "").strip().lower()
+    name = str(
+        user_data.get("name", "")
+        or (email.split("@")[0] if email else "User")
+    ).strip()
+    picture = str(user_data.get("picture", "") or "").strip()
+
+    if not email:
+        return None
 
     return {
-        "id": "demo@local",
-        "email": "demo@local",
-        "name": "Demo User",
-        "picture": "",
+        "id": str(user_data.get("sub", "") or email),
+        "email": email,
+        "name": name,
+        "picture": picture,
     }
 
 
@@ -164,6 +170,7 @@ def _sb_columns(table):
 
 
 def _sb_identity_column(table):
+    """Return the best email-like identity column for legacy tables."""
     cols = _sb_columns(table)
     if not cols:
         return "email"
@@ -173,16 +180,36 @@ def _sb_identity_column(table):
     return None
 
 
-def _sb_rows(table, email=None, order=None):
+def _sb_profile_id(email):
+    """Resolve profiles.id for a Google email."""
+    email = str(email or "").strip().lower()
+    if not supabase or not email:
+        return None
+    try:
+        rows = _sb_data(supabase.table("profiles").select("*").eq("email", email).limit(1).execute())
+        return rows[0].get("id") if rows else None
+    except Exception as exc:
+        st.session_state["supabase_profile_error"] = _sb_error(exc)
+        return None
+
+
+def _sb_user_rows(table, email=None, order=None):
+    """Read rows belonging to a user under either user_id or legacy email schemas."""
     q = supabase.table(table).select("*")
     if email is not None:
-        identity = _sb_identity_column(table)
-        if identity is None:
-            return []
-        q = q.eq(identity, email)
+        email = str(email or "").strip().lower()
+        cols = _sb_columns(table)
+        if cols and "user_id" in cols:
+            user_id = _sb_profile_id(email)
+            if not user_id:
+                return []
+            q = q.eq("user_id", user_id)
+        else:
+            identity = _sb_identity_column(table)
+            if identity is None:
+                return []
+            q = q.eq(identity, email)
     if order:
-        # Never send potentially problematic column names such as PostgreSQL's mode
-        # through select/order unless that column is confirmed by schema discovery.
         col = order[0]
         cols = _sb_columns(table)
         if cols is None or col in cols:
@@ -193,10 +220,23 @@ def _sb_rows(table, email=None, order=None):
     return _sb_data(q.execute())
 
 
-@st.cache_data(ttl=30, show_spinner=False)
+def _sb_rows(table, email=None, order=None):
+    """Compatibility wrapper used throughout the app."""
+    if email is not None:
+        return _sb_user_rows(table, email, order=order)
+    q = supabase.table(table).select("*")
+    if order:
+        col = order[0]
+        cols = _sb_columns(table)
+        if cols is None or col in cols:
+            try:
+                q = q.order(col, desc=order[1])
+            except Exception:
+                pass
+    return _sb_data(q.execute())
+
+
 def _cached_sb_all_rows(table):
-    if not supabase:
-        return []
     return _sb_rows(table)
 
 
@@ -204,12 +244,11 @@ def _cached_sb_all_rows(table):
 def _cached_sb_user_rows(table, email):
     if not supabase:
         return []
-    return _sb_rows(table, email)
+    return _sb_user_rows(table, email)
 
 
 def _clear_supabase_read_cache():
     try:
-        _cached_sb_all_rows.clear()
         _cached_sb_user_rows.clear()
     except Exception:
         pass
@@ -222,10 +261,33 @@ def _filter_payload_to_schema(table, payload):
     return {k: v for k, v in payload.items() if k in cols}
 
 
+def _payload_for_user(table, email, payload):
+    """Attach the ownership field required by the detected table schema."""
+    clean = dict(payload)
+    email = str(email or "").strip().lower()
+    cols = _sb_columns(table)
+    if cols and "user_id" in cols:
+        user_id = _sb_profile_id(email)
+        if user_id:
+            clean["user_id"] = user_id
+    else:
+        if not cols or "email" in cols:
+            clean["email"] = email
+        elif "user_email" in cols:
+            clean["user_email"] = email
+        elif "owner_email" in cols:
+            clean["owner_email"] = email
+    return clean
+
+
 def _strip_missing_columns(payload, error_text):
     text = str(error_text or "")
     missing = []
-    for pat in [r"column [\w]+\.([\w]+) does not exist", r"Could not find the '([^']+)' column", r"column ['\"]?([\w]+)['\"]? of"]:
+    for pat in [
+        r"column [\w]+\.([\w]+) does not exist",
+        r"Could not find the '([^']+)' column",
+        r"column ['\"]?([\w]+)['\"]? of",
+    ]:
         missing += re.findall(pat, text, flags=re.I)
     cleaned = dict(payload)
     changed = False
@@ -283,37 +345,40 @@ def db_record_attempt(user_email, questions, mode):
     if not supabase:
         return
     correct, incorrect, skipped, attended = answer_counts(questions)
-    attempt = {
+    attempt = _payload_for_user("quiz_attempts", user_email, {
         "email": user_email,
         "completed_at": datetime.now().isoformat(timespec="seconds"),
         "mode": str(mode),
         "quiz_mode": str(mode),
+        "total": len(questions),
         "correct": correct,
         "incorrect": incorrect,
         "skipped": skipped,
+        "attended": attended,
         "accuracy": (correct / attended * 100 if attended else 0.0),
-    }
+    })
     try:
         rows = _sb_insert_adaptive("quiz_attempts", attempt)
         attempt_id = rows[0].get("id") if rows else None
         for q in questions:
             ans = q.get("user_answer")
-            row = {
+            row = _payload_for_user("answers", user_email, {
                 "attempt_id": attempt_id,
                 "email": user_email,
                 "question": q["question"],
                 "question_text": q["question"],
+                "question_id": question_key(q),
                 "selected_answer": ans,
                 "correct_answer": q["correct"],
                 "is_correct": bool(ans is not None and ans == q["correct"]),
                 "skipped": ans is None,
                 "explanation": q.get("explanation", ""),
-            }
+            })
             try:
                 _sb_insert_adaptive("answers", row)
             except Exception:
-                # One malformed optional answer row must not invalidate the attempt.
                 pass
+        _clear_supabase_read_cache()
     except Exception as exc:
         st.session_state["supabase_attempt_error"] = _sb_error(exc)
 
@@ -333,28 +398,32 @@ def db_upsert_mistake(user_email, q):
     key = question_key(q)
     now = datetime.now().isoformat(timespec="seconds")
     try:
-        rows = _sb_rows("mistakes", user_email)
+        rows = _sb_user_rows("mistakes", user_email)
         existing = next((r for r in rows if _mistake_row_key(r) in {key, str(q.get("question", ""))}), None)
-        times = int((existing or {}).get("times_missed", 0) or 0) + 1
-        payload = {
+        existing_count = int((existing or {}).get("mistake_count", (existing or {}).get("times_missed", 0)) or 0)
+        times = existing_count + 1
+        payload = _payload_for_user("mistakes", user_email, {
             "email": user_email,
             "question_key": key,
             "question_id": key,
             "question_text": q.get("question", ""),
             "question": q.get("question", ""),
             "options_json": json.dumps(q.get("options", []), ensure_ascii=False),
+            "options": json.dumps(q.get("options", []), ensure_ascii=False),
             "correct": q.get("correct", ""),
             "correct_answer": q.get("correct", ""),
             "explanation": q.get("explanation", ""),
             "last_answer": q.get("user_answer"),
             "times_missed": times,
+            "mistake_count": times,
             "updated_at": now,
-        }
+        })
         clean = _filter_payload_to_schema("mistakes", payload)
         if existing and existing.get("id") is not None:
             supabase.table("mistakes").update(clean).eq("id", existing["id"]).execute()
         else:
             _sb_insert_adaptive("mistakes", clean)
+        _clear_supabase_read_cache()
     except Exception as exc:
         st.session_state["supabase_mistake_error"] = _sb_error(exc)
 
@@ -363,10 +432,11 @@ def db_remove_mistake(user_email, q):
     if not supabase:
         return
     try:
-        for r in _sb_rows("mistakes", user_email):
+        for r in _sb_user_rows("mistakes", user_email):
             if _mistake_row_key(r) in {question_key(q), str(q.get("question", ""))}:
                 if r.get("id") is not None:
                     supabase.table("mistakes").delete().eq("id", r["id"]).execute()
+                _clear_supabase_read_cache()
                 return
     except Exception as exc:
         st.session_state["supabase_mistake_error"] = _sb_error(exc)
@@ -402,9 +472,47 @@ def db_all_users():
         st.session_state["supabase_users_error"] = _sb_error(exc)
         return []
 
+def _recover_question_from_bank(question_id, fallback_text=""):
+    """Rehydrate content if the compact mistakes table stores only question_id."""
+    text = str(fallback_text or "")
+    qdate = None
+    key = str(question_id or "")
+    if "|" in key:
+        date_part, possible_text = key.split("|", 1)
+        try:
+            qdate = datetime.fromisoformat(date_part).date()
+        except Exception:
+            pass
+        if not text:
+            text = possible_text
+    if not text:
+        return None
+    try:
+        for _, row in df.iterrows():
+            row_date = row.get("Date")
+            if isinstance(row_date, pd.Timestamp):
+                row_date = row_date.date()
+            elif not isinstance(row_date, date):
+                try:
+                    row_date = pd.to_datetime(row_date).date()
+                except Exception:
+                    row_date = None
+            if qdate is not None and row_date != qdate:
+                continue
+            row_question = str(row.get("Question") or row.get("question") or row.get("question_text") or "")
+            if row_question == text:
+                options = [row.get(c) for c in ("A", "B", "C", "D") if row.get(c) not in (None, "")]
+                correct = str(row.get("Answer") or row.get("Correct Answer") or row.get("correct") or "")
+                explanation = str(row.get("Explanation") or row.get("explanation") or "")
+                return {"date": row_date or qdate or date.today(), "question": text, "options": options, "correct": correct, "explanation": explanation}
+    except Exception:
+        pass
+    return None
+
+
 def load_persistent_mistakes():
     ensure_progress_state()
-    email = st.session_state.get("auth_user", {}).get("email", "demo@local")
+    email = st.session_state.get("auth_user", {}).get("email", "")
     if not supabase:
         return
     try:
@@ -413,11 +521,11 @@ def load_persistent_mistakes():
         for row in _cached_sb_user_rows("mistakes", email):
             key = _mistake_row_key(row)
             text = str(row.get("question_text") or row.get("question") or "")
-            d = date.today()
+            qdate = date.today()
             if "|" in key:
                 parts = key.split("|", 1)
                 try:
-                    d = datetime.fromisoformat(parts[0]).date()
+                    qdate = datetime.fromisoformat(parts[0]).date()
                 except Exception:
                     pass
                 if not text:
@@ -427,10 +535,20 @@ def load_persistent_mistakes():
                 opts = json.loads(raw) if isinstance(raw, str) else raw
             except Exception:
                 opts = []
-            item = {"date": d, "question": text, "options": opts or [],
-                    "correct": row.get("correct") or row.get("correct_answer") or "",
-                    "explanation": row.get("explanation", ""), "last_answer": row.get("last_answer"),
-                    "times_missed": int(row.get("times_missed", 1) or 1)}
+            recovered = None
+            if not text or not opts or not (row.get("correct") or row.get("correct_answer")):
+                recovered = _recover_question_from_bank(key, text)
+            if recovered:
+                text = recovered["question"]
+                opts = recovered["options"]
+                correct = recovered["correct"]
+                explanation = recovered["explanation"]
+                qdate = recovered["date"]
+            else:
+                correct = row.get("correct") or row.get("correct_answer") or ""
+                explanation = row.get("explanation", "")
+            item = {"date": qdate, "question": text, "options": opts or [], "correct": correct, "explanation": explanation,
+                    "last_answer": row.get("last_answer"), "times_missed": int(row.get("mistake_count", row.get("times_missed", 1)) or 1)}
             if text:
                 bank[question_key(item)] = item
         st.session_state.mistake_bank = bank
@@ -440,7 +558,7 @@ def load_persistent_mistakes():
 
 def load_persistent_history():
     ensure_progress_state()
-    email = st.session_state.get("auth_user", {}).get("email", "demo@local")
+    email = st.session_state.get("auth_user", {}).get("email", "")
     if not supabase:
         return
     try:
@@ -451,10 +569,35 @@ def load_persistent_history():
                             "correct": int(row.get("correct", 0) or 0),
                             "incorrect": int(row.get("incorrect", 0) or 0),
                             "skipped": int(row.get("skipped", 0) or 0),
-                            "mode": row.get("quiz_mode") or row.get("test_mode") or "Quiz"})
+                            "mode": row.get("quiz_mode") or row.get("test_mode") or row.get("mode") or "Quiz"})
         st.session_state.quiz_history = history
     except Exception as exc:
         st.session_state["supabase_history_error"] = _sb_error(exc)
+
+
+def _delete_user_rows(table, email):
+    if not supabase:
+        return
+    cols = _sb_columns(table)
+    if cols and "user_id" in cols:
+        user_id = _sb_profile_id(email)
+        if user_id:
+            supabase.table(table).delete().eq("user_id", user_id).execute()
+    else:
+        identity = _sb_identity_column(table)
+        if identity:
+            supabase.table(table).delete().eq(identity, email).execute()
+
+
+def db_reset_user_progress(email):
+    if not supabase:
+        return
+    try:
+        for table in ("answers", "quiz_attempts", "mistakes", "daily_activity", "achievements"):
+            _delete_user_rows(table, email)
+        _clear_supabase_read_cache()
+    except Exception as exc:
+        raise RuntimeError(_sb_error(exc)) from exc
 
 
 def db_reset_user_progress(email):
@@ -483,9 +626,7 @@ def db_delete_user(email):
 
     # Delete dependent records first, then the profile.
     for table in ("answers", "quiz_attempts", "mistakes", "daily_activity", "achievements"):
-        identity = _sb_identity_column(table)
-        if identity:
-            supabase.table(table).delete().eq(identity, email).execute()
+        _delete_user_rows(table, email)
 
     profile_identity = _sb_identity_column("profiles")
     if profile_identity:
@@ -1206,7 +1347,7 @@ def question_key(q):
 def update_mistake_bank(q):
     ensure_progress_state()
     key = question_key(q)
-    email = st.session_state.get("auth_user", {}).get("email", "demo@local")
+    email = st.session_state.get("auth_user", {}).get("email", "")
     if q["user_answer"] is not None and q["user_answer"] == q["correct"]:
         st.session_state.mistake_bank.pop(key, None)
         db_remove_mistake(email, q)
@@ -1242,14 +1383,14 @@ def record_quiz_result(questions):
         "total": len(questions),
         "mode": mode,
     })
-    user_email = st.session_state.get("auth_user", {}).get("email", "demo@local")
+    user_email = st.session_state.get("auth_user", {}).get("email", "")
     db_record_attempt(user_email, questions, mode)
     _clear_supabase_read_cache()
     st.session_state.quiz_recorded = True
 
 
 def progress_stats():
-    ensure_progress_state(); email=st.session_state.get("auth_user",{}).get("email","demo@local")
+    ensure_progress_state(); email=st.session_state.get("auth_user",{}).get("email","")
     if not supabase:return {"quizzes":0,"correct":0,"attended":0,"accuracy":0,"current_streak":0,"best_streak":0,"dates":[]}
     try:
         rows=_cached_sb_user_rows("quiz_attempts",email); quizzes=len(rows); correct=sum(int(r.get("correct",0) or 0) for r in rows); attended=sum(int(r.get("correct",0) or 0)+int(r.get("incorrect",0) or 0) for r in rows); accuracy=correct/attended*100 if attended else 0
@@ -1502,8 +1643,19 @@ ensure_progress_state()
 # =========================================================
 # AUTH GATE + USER RECORD
 # =========================================================
-st.session_state.setdefault("auth_user", get_auth_user())
-if auth_is_configured() and st.session_state.auth_user is None:
+# Authentication is mandatory in production. Never create a demo account.
+if not auth_is_configured():
+    st.error("Google authentication is not configured for this deployment.")
+    st.info(
+        "In Streamlit Cloud → Manage app → Settings → Secrets, "
+        "configure [auth] with redirect_uri, cookie_secret, client_id, "
+        "client_secret and server_metadata_url."
+    )
+    st.stop()
+
+auth_user = get_auth_user()
+
+if auth_user is None:
     st.markdown("""
     <div class='hero'>
         <div class='eyebrow'>Current Affairs Study Studio</div>
@@ -1511,11 +1663,12 @@ if auth_is_configured() and st.session_state.auth_user is None:
         <div class='hero-sub'>Sign in with Google to keep your streak, accuracy, mistakes and quiz history tied to your own profile.</div>
     </div>
     """, unsafe_allow_html=True)
+
+    # Streamlit's default OIDC provider is Google in our configuration.
     if st.button("Continue with Google", type="primary", use_container_width=True):
         st.login()
-    st.stop()
 
-auth_user = st.session_state.auth_user
+    st.stop()
 _current_email = str(auth_user.get("email", "")).strip().lower()
 if st.session_state.get("_profile_synced_email") != _current_email:
     db_upsert_user(auth_user)
@@ -1944,7 +2097,7 @@ def render_main_content():
             st.markdown("<div class='admin-control-card blue'><div class='admin-icon'>📊</div><div class='admin-control-label'>View detailed progress</div><div class='admin-control-copy'>See quizzes, accuracy and mistakes.</div></div>", unsafe_allow_html=True)
             if st.button("View progress", use_container_width=True, key="admin_view_history"):
                 try:
-                    hist_rows = _sb_data(supabase.table("quiz_attempts").select("*").eq("email", email_to_manage).order("completed_at", desc=True).limit(100).execute())
+                    hist_rows = _sb_user_rows("quiz_attempts", email_to_manage, order=("completed_at", True))[:100]
                     st.session_state.admin_history = pd.DataFrame(hist_rows)
                 except Exception as exc:
                     st.error(f"Could not load detailed history: {_sb_error(exc)}")
