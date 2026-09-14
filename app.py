@@ -55,14 +55,16 @@ supabase = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY) if SUPABASE_CONFIGUR
 # AUTH HELPERS
 # =========================================================
 def auth_is_configured():
-    """Check whether Streamlit's default OIDC provider is configured."""
+    """Check whether Streamlit's default OIDC provider is configured.
+
+    Streamlit exposes secrets sections through a mapping-like object, so do
+    not require the [auth] section to be a literal built-in dict.
+    """
     try:
-        auth = st.secrets.get("auth", {})
-        if not isinstance(auth, dict):
+        auth = st.secrets.get("auth")
+        if auth is None:
             return False
 
-        # For one Google provider, Streamlit expects these three values
-        # directly inside [auth].
         required = ("client_id", "client_secret", "server_metadata_url")
         return all(str(auth.get(key, "")).strip() for key in required)
     except Exception:
