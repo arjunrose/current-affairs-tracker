@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from supabase import create_client
 
-APP_BUILD = "Welcome back buddy!"
+APP_BUILD = "SUPABASE-FAST-UI-ADAPTIVE-CUSTOM-TEST-2026-09-14"
 
 # =========================================================
 # PAGE + APP CONFIG
@@ -570,71 +570,23 @@ def db_remove_mistake(user_email, q):
 
 
 def db_user_stats(email):
-    """Return admin-facing stats for one user.
-
-    IMPORTANT: current Supabase child tables use user_id (profiles.id UUID),
-    not an email column. The old admin code filtered quiz_attempts/mistakes
-    by email, so every child-table lookup returned zero even when the user
-    had completed quizzes. We resolve the profile UUID first, then match
-    user_id. Legacy email-owned rows are still supported as a fallback.
-    """
-    empty = {"quizzes": 0, "correct": 0, "attended": 0, "total": 0, "accuracy": 0, "mistakes": 0, "last_seen": "—"}
     if not supabase:
-        return empty
+        return {"quizzes": 0, "correct": 0, "attended": 0, "total": 0, "accuracy": 0, "mistakes": 0, "last_seen": "—"}
     try:
         email = str(email or "").strip().lower()
-        if not email:
-            return empty
-
         def owner(row):
-            return str(
-                row.get("email")
-                or row.get("user_email")
-                or row.get("owner_email")
-                or ""
-            ).strip().lower()
-
-        # Read the cached profile table once and resolve the real UUID.
-        profiles_all = _cached_sb_all_rows("profiles")
-        profile = next((r for r in profiles_all if owner(r) == email), None)
-        profile_id = str(profile.get("id", "")).strip() if profile else ""
-
-        def belongs_to_user(row):
-            row_user_id = str(row.get("user_id", "")).strip()
-            if profile_id and row_user_id:
-                return row_user_id == profile_id
-            # Legacy deployments stored email directly on child rows.
-            return owner(row) == email
-
-        attempts = [r for r in _cached_sb_all_rows("quiz_attempts") if belongs_to_user(r)]
-        mistakes = [r for r in _cached_sb_all_rows("mistakes") if belongs_to_user(r)]
-
+            return str(row.get("email", row.get("user_email", row.get("owner_email", "")))).strip().lower()
+        attempts = [r for r in _cached_sb_all_rows("quiz_attempts") if owner(r) == email]
+        mistakes = [r for r in _cached_sb_all_rows("mistakes") if owner(r) == email]
+        profiles = [r for r in _cached_sb_all_rows("profiles") if owner(r) == email]
         correct = sum(int(x.get("correct", 0) or 0) for x in attempts)
-        attended = sum(
-            int(x.get("correct", 0) or 0) + int(x.get("incorrect", 0) or 0)
-            for x in attempts
-        )
-        total = sum(
-            int(x.get("total_questions", x.get("total", 0)) or 0)
-            for x in attempts
-        )
-        # Some legacy attempts may not have total_questions/total. Fall back
-        # to answered + skipped so their Questions card still remains useful.
-        if total == 0 and attempts:
-            total = attended + sum(int(x.get("skipped", 0) or 0) for x in attempts)
-
-        return {
-            "quizzes": len(attempts),
-            "correct": correct,
-            "attended": attended,
-            "total": total,
-            "accuracy": correct / attended * 100 if attended else 0,
-            "mistakes": len(mistakes),
-            "last_seen": (profile or {}).get("last_seen", "—") if profile else "—",
-        }
-    except Exception as exc:
-        st.session_state["supabase_admin_stats_error"] = _sb_error(exc)
-        return empty
+        attended = sum(int(x.get("correct", 0) or 0) + int(x.get("incorrect", 0) or 0) for x in attempts)
+        total = attended + sum(int(x.get("skipped", 0) or 0) for x in attempts)
+        return {"quizzes": len(attempts), "correct": correct, "attended": attended, "total": total,
+                "accuracy": correct / attended * 100 if attended else 0,
+                "mistakes": len(mistakes), "last_seen": profiles[0].get("last_seen", "—") if profiles else "—"}
+    except Exception:
+        return {"quizzes": 0, "correct": 0, "attended": 0, "total": 0, "accuracy": 0, "mistakes": 0, "last_seen": "—"}
 
 def db_all_users():
     if not supabase:
@@ -1730,23 +1682,62 @@ def initialize_quiz_from_records(records):
 
 
 def generate_question_sample(source_df, q_mode, num_q):
+    """Build a custom test with sensible date coverage.
+
+    Rules for a custom number:
+      * When requested <= number of available study days: pick that many
+        random dates, then pick exactly one random question from each date.
+      * When requested > number of available study days: guarantee one
+        question from every available day, then fill the remaining slots with
+        random questions from the rest of the selected date range.
+      * Never silently increase a user's requested count.
+
+    This means asking for 5 questions across 133 days produces exactly 5
+    questions from 5 random dates, while asking for 150 produces 150
+    questions with at least one question from each of the 133 days.
+    """
     if source_df.empty:
         return source_df.copy()
 
+    # "All" keeps the existing behaviour: every question in the range.
     if q_mode == "All":
         return source_df.sample(frac=1).reset_index(drop=True)
 
-    unique_dates = source_df["Date"].dropna().unique()
-    sample_size = min(max(int(num_q), len(unique_dates)), len(source_df))
-    guaranteed_df = source_df.groupby("Date", group_keys=False).sample(n=1)
-    remaining_needed = sample_size - len(guaranteed_df)
+    requested = max(1, int(num_q))
+    available_days = source_df["Date"].dropna().unique()
+    day_count = len(available_days)
+    if day_count == 0:
+        return source_df.sample(n=min(requested, len(source_df))).reset_index(drop=True)
 
-    if remaining_needed > 0:
-        remaining_pool = source_df.drop(guaranteed_df.index)
-        extra_df = remaining_pool.sample(n=min(remaining_needed, len(remaining_pool)))
-        final_sample = pd.concat([guaranteed_df, extra_df])
-    else:
+    # Never create more questions than actually exist.
+    target_count = min(requested, len(source_df))
+
+    # Case 1: the test is smaller than the number of study days.
+    # Pick random dates first so the requested questions are spread across
+    # randomly chosen days instead of being forced to cover every day.
+    if requested <= day_count:
+        chosen_dates = list(random.sample(list(available_days), requested))
+        pieces = []
+        for d in chosen_dates:
+            day_questions = source_df[source_df["Date"] == d]
+            pieces.append(day_questions.sample(n=1))
+        return pd.concat(pieces).sample(frac=1).reset_index(drop=True)
+
+    # Case 2: the test is larger than the number of available days.
+    # First guarantee one question from every day. Then fill the remaining
+    # slots randomly from all questions that were not already selected.
+    guaranteed_df = source_df.groupby("Date", group_keys=False).sample(n=1)
+    remaining_needed = target_count - len(guaranteed_df)
+
+    if remaining_needed <= 0:
         final_sample = guaranteed_df
+    else:
+        remaining_pool = source_df.drop(index=guaranteed_df.index)
+        extra_df = remaining_pool.sample(
+            n=min(remaining_needed, len(remaining_pool)),
+            replace=False,
+        )
+        final_sample = pd.concat([guaranteed_df, extra_df])
 
     return final_sample.sample(frac=1).reset_index(drop=True)
 
@@ -2608,7 +2599,7 @@ def render_main_content():
         with c2:
             render_metric("Days", f"{available_days:,}", "Dates in range")
         with c3:
-            render_metric("Minimum test", f"{available_days:,}", "One question per date")
+            render_metric("Coverage rule", "Adaptive", "1 per day only when requested > days")
 
         q_mode = st.radio("Question quantity", ["Custom Number", "All"], horizontal=True)
         if q_mode == "Custom Number":
@@ -2619,9 +2610,17 @@ def render_main_content():
                 value=min(15, max(1, available_questions)),
                 step=1,
             )
-            actual_num = max(int(requested), available_days) if available_questions else 0
-            if actual_num > int(requested):
-                st.info(f"To cover all {available_days} study days, your test will contain **{actual_num}** questions.")
+            actual_num = int(requested)
+            if actual_num > available_days:
+                st.info(
+                    f"Your test will include at least **1 question from each of the {available_days} study days**, "
+                    f"then fill the remaining **{actual_num - available_days}** questions randomly."
+                )
+            else:
+                st.info(
+                    f"Your test will contain exactly **{actual_num} questions** from **{actual_num} randomly selected study days** "
+                    f"(1 question per selected day)."
+                )
         else:
             actual_num = "All"
             st.info(f"You’ll practise all **{available_questions}** questions in the selected range.")
