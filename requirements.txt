@@ -1,5 +1,6 @@
-streamlit
-pandas
-plotly
-Authlib>=1.3.2
-supabase>=2.31.0
+streamlit>=1.46
+supabase>=2.4
+pandas>=2.0
+plotly>=5.20
+requests>=2.31
+tzdata
