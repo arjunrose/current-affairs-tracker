@@ -1925,7 +1925,7 @@ def custom_setup():
     else:
         st.info(f"You'll practise all **{len(pool)}** questions in this range.")
     if st.button("🎯 Generate my test", type="primary", key="gen_custom", **BTN_W):
-        src = {"kind": "custom", "start": end, "end": end, "qmode": qmode, "count": count}
+        src = {"kind": "custom", "start": start, "end": end, "qmode": qmode, "count": count}
         start_quiz(qmode, records_from_source(src), P_CUSTOM, src)
         st.rerun()
 
