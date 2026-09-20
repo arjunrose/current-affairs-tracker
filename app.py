@@ -42,7 +42,7 @@ st.set_page_config(
 # =========================================================
 # 1. CONFIG
 # =========================================================
-APP_BUILD = "Snapshot Engine + Arjun Server.Api"
+APP_BUILD = "Stage 22 · Snapshot Engine + Admin Control Room"
 DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/1hFoQMwnPugw8A6El69rkU0kNT4NDYJt4msOgnNv-f8Q/export?format=csv"
 
 PUBLIC_ID_COOLDOWN_DAYS = 3
@@ -536,6 +536,15 @@ div[data-testid="stAlert"]{border-radius:15px!important}
 .cal-title{text-align:center;font-weight:800;padding:.5rem 0}
 .cal-wd{text-align:center;color:var(--muted);font-size:.72rem;font-weight:800;padding:.2rem 0}
 .cal-legend{color:var(--muted);font-size:.78rem;margin-top:.5rem}
+/* day states are encoded in the button key: -perf- perfect, -done- completed, -sel- selected (+sel = selected too) */
+[class*="st-key-cal-"][class*="-done-"] button,[class*="st-key-cal-"][class*="-donesel-"] button{background:var(--accent-soft)!important;border-color:var(--accent)!important;color:var(--accent-dark)!important}
+[class*="st-key-cal-"][class*="-perf-"] button,[class*="st-key-cal-"][class*="-perfsel-"] button{background:var(--accent)!important;border-color:var(--accent)!important;color:#fff!important}
+[class*="st-key-cal-"][class*="-perf-"] button p,[class*="st-key-cal-"][class*="-perfsel-"] button p{color:#fff!important;font-weight:900!important}
+[class*="st-key-cal-"][class*="-perf-"] button:hover,[class*="st-key-cal-"][class*="-perfsel-"] button:hover{background:var(--accent-dark)!important;border-color:var(--accent-dark)!important;color:#fff!important}
+[class*="st-key-cal-"][class*="-sel-"] button{background:var(--surface)!important;border:2px solid var(--accent-dark)!important;color:var(--accent-dark)!important}
+[class*="st-key-cal-"][class*="-sel-"] button p{font-weight:900!important}
+[class*="st-key-cal-"][class*="-donesel-"] button,[class*="st-key-cal-"][class*="-perfsel-"] button{box-shadow:0 0 0 2px var(--surface),0 0 0 4px var(--accent-dark)!important}
+.cal-key{display:inline-block;width:.85rem;height:.85rem;border-radius:4px;vertical-align:-2px;margin-right:.25rem;border:1px solid var(--accent)}
 
 @media (max-width:900px){
  .block-container{padding:1.2rem 1rem 3rem}.hero{padding:1.4rem;border-radius:20px}.quiz-shell{padding:1.1rem;border-radius:20px}
@@ -857,12 +866,14 @@ def _load_snapshot(uid, prev=None):
         "completions": lambda: fetch_all("task_completions", "task_key,task_date,qp_awarded,completed_at",
                                          eq={"user_id": uid}, gte={"task_date": since}, order=("completed_at", True)),
         "bookmarks": lambda: fetch_all("bookmarks", "question_id", eq={"user_id": uid}),
+        "daily": lambda: fetch_all("daily_quiz_results", "quiz_date,total_questions,best_correct,attempts,completed,perfect",
+                                   eq={"user_id": uid}),
     })
 
     def got(name):
         data, exc = res[name]
         if exc is not None:
-            if not (name == "bookmarks" and is_missing_table(exc)):
+            if not (name in ("bookmarks", "daily") and is_missing_table(exc)):
                 db_note(name.title(), exc)
             return None
         return data
@@ -894,7 +905,18 @@ def _load_snapshot(uid, prev=None):
     bm_data, bm_exc = res["bookmarks"]
     bookmarks_ok = bm_exc is None or not is_missing_table(bm_exc)
     bookmarks = {r["question_id"] for r in bm_data} if bm_data is not None else prev.get("bookmarks", set())
-    return {"uid": uid, "at": time.time(), "profile": profile, "attempts": attempts, "mistakes": mistakes,
+    dq_data, dq_exc = res["daily"]
+    daily_ok = dq_exc is None or not is_missing_table(dq_exc)
+    if dq_data is not None:
+        daily = {}
+        for r in dq_data:
+            try:
+                daily[date.fromisoformat(str(r["quiz_date"])[:10])] = r
+            except Exception:
+                pass
+    else:
+        daily = prev.get("daily", {})
+    return {"uid": uid, "at": time.time(), "profile": profile, "daily": daily, "daily_ok": daily_ok, "attempts": attempts, "mistakes": mistakes,
             "orphans": orphans, "league": league, "completions": completions, "bookmarks": bookmarks,
             "bookmarks_ok": bookmarks_ok, "_stats": None}
 
@@ -1324,11 +1346,13 @@ def calendar_picker(key, default, available, completed=frozenset(), perfect=froz
                     c.write("")
                     continue
                 d = date(month.year, month.month, n)
-                label = f"{n}★" if d in perfect else (f"{n}✓" if d in completed else str(n))
-                c.button(label, key=f"cal-{key}-{d.isoformat()}", on_click=_set_state, args=(sel_k, d),
-                         disabled=d not in available, type="primary" if d in perfect else "secondary", **BTN_W)
-        md(f"<style>.st-key-cal-{key}-{sel.isoformat()} button {{ outline: 2px solid var(--accent) !important; outline-offset: 2px !important; border-color: var(--accent) !important; }}</style>")
-        md("<div class='cal-legend'>Outline = selected · Filled = perfect score · ✓ completed · greyed = no questions</div>")
+                base = "perf" if d in perfect else ("done" if d in completed else "")
+                state = (base + "sel") if d == sel else (base or "day")
+                c.button(str(n), key=f"cal-{key}-{state}-{d.isoformat()}", on_click=_set_state, args=(sel_k, d),
+                         disabled=d not in available, **BTN_W)
+        md("<div class='cal-legend'><span class='cal-key' style='background:var(--accent)'></span>Perfect (no mistakes or skips) · "
+           "<span class='cal-key' style='background:var(--accent-soft)'></span>Completed · "
+           "<span class='cal-key' style='background:var(--surface);border:2px solid var(--accent-dark)'></span>Selected · greyed = no questions</div>")
     return sel
 
 
@@ -1482,15 +1506,42 @@ def finalize_quiz():
             errors.append(f"QP could not be awarded: {err_text(exc)}")
             db_note("QP", exc)
 
-        ds = st.session_state.get("_daily_status")
-        if ds and quiz["mode"] == "Daily" and len({q["date"] for q in qs}) == 1 and len(qs) == planned:
-            d = qs[0]["date"]
-            ds["completed"].add(d)
-            if correct == len(qs):
-                ds["perfect"].add(d)
-    quiz["result"] = {"errors": errors, "qp": qp, "completed_at": completed_at, "celebrated": False}
+        daily_perfect = False
+        if quiz["mode"] == "Daily" and len({q["date"] for q in qs}) == 1:
+            try:
+                daily_perfect = record_daily_result(snap, uid, qs[0]["date"], len(qs), correct)
+            except Exception as exc:
+                errors.append(f"Calendar mark was not saved: {err_text(exc)}")
+                db_note("Calendar", exc)
+    quiz["result"] = {"errors": errors, "qp": qp, "completed_at": completed_at, "celebrated": False,
+                      "daily_perfect": daily_perfect}
     if qp and qp["promoted"]:
         st.toast(f"Promoted to {qp['to']}!", icon="🎉")
+
+
+def record_daily_result(snap, uid, d, n_locked, correct):
+    """Persist 'this study day was completed / perfect' in daily_quiz_results. Perfect is never removed."""
+    expected = len(Q_BY_DATE.get(d, []))
+    if not snap["daily_ok"] or expected == 0 or n_locked < max(1, (expected * 8 + 9) // 10):
+        return False
+    perfect_now = n_locked >= expected and correct == n_locked      # every question answered, none wrong, none skipped
+    now, ex = iso_now(), snap["daily"].get(d)
+    if ex is None:
+        row = {"user_id": uid, "quiz_date": d.isoformat(), "total_questions": expected, "best_correct": correct,
+               "attempts": 1, "completed": True, "perfect": perfect_now, "first_completed_at": now, "last_completed_at": now}
+        try:
+            insert_rows("daily_quiz_results", [row])
+            snap["daily"][d] = row
+            return perfect_now
+        except Exception:                      # duplicate (another tab/device) -> merge instead
+            ex = {}
+    row = {"total_questions": max(int(ex.get("total_questions") or 0), expected),
+           "best_correct": max(int(ex.get("best_correct") or 0), correct),
+           "attempts": int(ex.get("attempts") or 0) + 1, "completed": True,
+           "perfect": bool(ex.get("perfect")) or perfect_now, "last_completed_at": now}
+    update_rows("daily_quiz_results", row, user_id=uid, quiz_date=d.isoformat())
+    snap["daily"][d] = {**ex, **row}
+    return perfect_now
 
 
 def render_palette(qs, cur):
@@ -1626,6 +1677,8 @@ def render_results(quiz):
     mins = max(1, round((t1 - t0).total_seconds() / 60)) if t0 and t1 else 0
     for e in res.get("errors", []):
         st.warning(e)
+    if res.get("daily_perfect"):
+        st.success("🌟 Perfect day! This date is now locked in green on your Daily Quiz calendar.")
 
     cols = st.columns(5)
     for c, (l, v, f) in zip(cols, [("Score", f"{correct}/{n}", "Correct answers"), ("Accuracy", f"{acc:.0f}%", "Of attempted"),
@@ -1816,8 +1869,8 @@ def _answers_for_user(uid, attempts):
         return out
 
 
-def daily_status():
-    """Days with a completed / perfect Daily Quiz (lazy, cached per session, updated when a quiz finishes)."""
+def legacy_daily_status():
+    """Old method: rebuild completed/perfect days from the answers table. Used for a one-time migration and as a fallback."""
     cache = st.session_state.get("_daily_status")
     if cache and time.time() - cache["at"] < 300:
         return cache
@@ -1843,7 +1896,8 @@ def daily_status():
             if exp == 0 or not (t == "daily" or (t == "all" and len(rs) == exp)) or len(rs) < max(1, int(exp * 0.8)):
                 continue
             completed.add(d)
-            if all(r.get("is_correct") and not r.get("skipped") for r in rs):
+            # Perfect = every question of that day answered correctly, none skipped. Once earned it is never removed.
+            if len(rs) >= exp and all(r.get("is_correct") and not r.get("skipped") for r in rs):
                 perfect.add(d)
     except Exception as exc:
         db_note("Calendar", exc)
@@ -1851,15 +1905,50 @@ def daily_status():
     return st.session_state["_daily_status"]
 
 
+def _migrate_legacy_daily(snap):
+    """One-time, per learner: copy days derived from old answer history into daily_quiz_results."""
+    uid = st.session_state["_uid"]
+    if st.session_state.get("_daily_migrated") == uid or snap["daily"]:
+        return
+    st.session_state["_daily_migrated"] = uid
+    if not any(a["type"].lower() in ("daily", "all") for a in snap["attempts"]):
+        return
+    try:
+        old = legacy_daily_status()
+        rows = [{"user_id": uid, "quiz_date": d.isoformat(), "total_questions": len(Q_BY_DATE.get(d, [])),
+                 "best_correct": len(Q_BY_DATE.get(d, [])) if d in old["perfect"] else 0, "attempts": 1,
+                 "completed": True, "perfect": d in old["perfect"]} for d in old["completed"]]
+        if rows:
+            insert_rows("daily_quiz_results", rows)
+            for r in rows:
+                snap["daily"][date.fromisoformat(r["quiz_date"])] = r
+    except Exception as exc:
+        db_note("Calendar", exc)
+
+
+def daily_status():
+    """Completed / perfect study days. Persistent (from daily_quiz_results) whenever that table exists."""
+    snap = snapshot()
+    if snap["daily_ok"]:
+        _migrate_legacy_daily(snap)
+        rows = snap["daily"]
+        return {"completed": {d for d, r in rows.items() if r.get("completed", True)},
+                "perfect": {d for d, r in rows.items() if r.get("perfect")}, "persistent": True}
+    return {**legacy_daily_status(), "persistent": False}
+
+
 @st.fragment
 def daily_setup():
     status = daily_status()
+    if not status["persistent"]:
+        md("<div class='notice warn'>Calendar marks are not being saved permanently yet. Run the latest "
+           "<b>supabase_setup.sql</b> (it creates the <b>daily_quiz_results</b> table) and reload.</div>")
     left, right = st.columns([1.15, 1], gap="large")
     with left:
         sel = calendar_picker("daily", LATEST_DATE, set(DATES), status["completed"], status["perfect"])
     pool = Q_BY_DATE.get(sel, [])
     with right:
-        tag = pill("Perfect ★", "good") if sel in status["perfect"] else (pill("Completed ✓", "good") if sel in status["completed"] else pill("Not attempted", "off"))
+        tag = pill("Perfect · no mistakes or skips", "good") if sel in status["perfect"] else (pill("Completed ✓", "good") if sel in status["completed"] else pill("Not attempted", "off"))
         md(f"<div class='card'><div class='metric-label'>{sel:%A, %d %B %Y}</div>"
            f"<div class='metric-value'>{len(pool)} <span style='font-size:1rem' class='muted'>questions</span></div>"
            f"<div style='margin:.5rem 0'>{tag}{pill('Latest', 'warn') if sel == LATEST_DATE else ''}</div>"
@@ -2309,7 +2398,7 @@ def wipe_user_data(uid, keep_league=False):
         except Exception as exc:
             if not is_missing_table(exc):
                 errs.append(f"answers: {err_text(exc)}")
-    tables = ["answers", "quiz_attempts", "mistakes", "bookmarks", "daily_activity", "achievements"]
+    tables = ["answers", "quiz_attempts", "mistakes", "bookmarks", "daily_quiz_results", "daily_activity", "achievements"]
     if not keep_league:
         tables += ["task_completions", "league_progress"]
     for t in tables:
@@ -2685,6 +2774,7 @@ HEALTH_CHECKS = {
     "mistakes": "id,user_id,question_id,mistake_count,last_answer",
     "league_progress": "user_id,qp,lifetime_qp,league_index,updated_at",
     "task_completions": "id,user_id,task_key,task_date,qp_awarded,completed_at",
+    "daily_quiz_results": "id,user_id,quiz_date,total_questions,best_correct,attempts,completed,perfect,first_completed_at,last_completed_at",
     "bookmarks (optional)": "user_id,question_id",
     "announcements (optional)": "id,message,level,active,created_at",
     "admin_audit (optional)": "id,admin_email,action,target_email,created_at",
