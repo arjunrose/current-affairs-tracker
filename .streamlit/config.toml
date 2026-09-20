@@ -1,1 +1,12 @@
+# Forces Streamlit's own widgets (dropdowns, date pickers, dialogs, tables) to use the light base,
+# so they never turn dark on visitors whose browser/OS is in dark mode.
+[theme]
+base = "light"
+primaryColor = "#789052"
+backgroundColor = "#F7FAF4"
+secondaryBackgroundColor = "#EEF4E8"
+textColor = "#26352B"
+font = "sans serif"
 
+[client]
+toolbarMode = "minimal"
